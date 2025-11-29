@@ -1,19 +1,15 @@
 use crate::constants::files::DNS_CONFIG;
-use crate::{
-    config::Config,
-    logging,
-    process::AsyncHandler,
-    utils::{dirs, logging::Type},
-};
+use crate::{config::Config, process::AsyncHandler, utils::dirs};
 use anyhow::Error;
 use arc_swap::{ArcSwap, ArcSwapOption};
+use clash_verge_logging::{Type, logging};
 use once_cell::sync::OnceCell;
 use reqwest_dav::list_cmd::{ListEntity, ListFile};
 use smartstring::alias::String;
 use std::{
     collections::HashMap,
     env::{consts::OS, temp_dir},
-    io::Write,
+    io::Write as _,
     path::PathBuf,
     sync::Arc,
     time::Duration,
@@ -45,12 +41,12 @@ enum Operation {
 }
 
 impl Operation {
-    fn timeout(&self) -> u64 {
+    const fn timeout(&self) -> u64 {
         match self {
-            Operation::Upload => TIMEOUT_UPLOAD,
-            Operation::Download => TIMEOUT_DOWNLOAD,
-            Operation::List => TIMEOUT_LIST,
-            Operation::Delete => TIMEOUT_DELETE,
+            Self::Upload => TIMEOUT_UPLOAD,
+            Self::Download => TIMEOUT_DOWNLOAD,
+            Self::List => TIMEOUT_LIST,
+            Self::Delete => TIMEOUT_DELETE,
         }
     }
 }
@@ -61,9 +57,9 @@ pub struct WebDavClient {
 }
 
 impl WebDavClient {
-    pub fn global() -> &'static WebDavClient {
+    pub fn global() -> &'static Self {
         static WEBDAV_CLIENT: OnceCell<WebDavClient> = OnceCell::new();
-        WEBDAV_CLIENT.get_or_init(|| WebDavClient {
+        WEBDAV_CLIENT.get_or_init(|| Self {
             config: Arc::new(ArcSwapOption::new(None)),
             clients: Arc::new(ArcSwap::new(Arc::new(HashMap::new()))),
         })
@@ -92,20 +88,20 @@ impl WebDavClient {
                     || verge.webdav_username.is_none()
                     || verge.webdav_password.is_none()
                 {
-                    let msg: String = "Unable to create web dav client, please make sure the webdav config is correct".into();
+                    let msg: String =
+                        "Unable to create web dav client, please make sure the webdav config is correct".into();
                     return Err(anyhow::Error::msg(msg));
                 }
 
                 let config = WebDavConfig {
                     url: verge
                         .webdav_url
-                        .as_ref()
-                        .cloned()
+                        .clone()
                         .unwrap_or_default()
                         .trim_end_matches('/')
                         .into(),
-                    username: verge.webdav_username.as_ref().cloned().unwrap_or_default(),
-                    password: verge.webdav_password.as_ref().cloned().unwrap_or_default(),
+                    username: verge.webdav_username.clone().unwrap_or_default(),
+                    password: verge.webdav_password.clone().unwrap_or_default(),
                 };
 
                 // 存储配置到 ArcSwapOption

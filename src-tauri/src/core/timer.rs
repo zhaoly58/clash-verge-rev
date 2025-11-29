@@ -1,8 +1,6 @@
-use crate::{
-    config::Config, core::sysopt::Sysopt, feat, logging, logging_error, singleton,
-    utils::logging::Type,
-};
-use anyhow::{Context, Result};
+use crate::{config::Config, feat, singleton, utils::resolve::is_resolve_done};
+use anyhow::{Context as _, Result};
+use clash_verge_logging::{Type, logging, logging_error};
 use delay_timer::prelude::{DelayTimer, DelayTimerBuilder, TaskBuilder};
 use parking_lot::RwLock;
 use smartstring::alias::String;
@@ -46,7 +44,7 @@ singleton!(Timer, TIMER_INSTANCE);
 
 impl Timer {
     fn new() -> Self {
-        Timer {
+        Self {
             delay_timer: Arc::new(RwLock::new(DelayTimerBuilder::default().build())),
             timer_map: Arc::new(RwLock::new(HashMap::new())),
             timer_count: AtomicU64::new(1),
@@ -154,7 +152,6 @@ impl Timer {
     /// 每 3 秒更新系统托盘菜单，总共执行 3 次
     pub fn add_update_tray_menu_task(&self) -> Result<()> {
         let tid = self.timer_count.fetch_add(1, Ordering::SeqCst);
-        let delay_timer = self.delay_timer.write();
         let task = TaskBuilder::default()
             .set_task_id(tid)
             .set_maximum_parallel_runnable_num(1)
@@ -164,7 +161,8 @@ impl Timer {
                 crate::core::tray::Tray::global().update_menu().await
             })
             .context("failed to create update tray menu timer task")?;
-        delay_timer
+        self.delay_timer
+            .write()
             .add_task(task)
             .context("failed to add update tray menu timer task")?;
         Ok(())
@@ -193,14 +191,12 @@ impl Timer {
 
         // Perform sync operations while holding locks
         {
-            let mut timer_map = self.timer_map.write();
-            let delay_timer = self.delay_timer.write();
-
             for (uid, diff) in diff_map {
                 match diff {
                     DiffFlag::Del(tid) => {
-                        timer_map.remove(&uid);
-                        if let Err(e) = delay_timer.remove_task(tid) {
+                        self.timer_map.write().remove(&uid);
+                        let value = self.delay_timer.write().remove_task(tid);
+                        if let Err(e) = value {
                             logging!(
                                 warn,
                                 Type::Timer,
@@ -220,12 +216,13 @@ impl Timer {
                             last_run: chrono::Local::now().timestamp(),
                         };
 
-                        timer_map.insert(uid.clone(), task);
+                        self.timer_map.write().insert(uid.clone(), task);
                         operations_to_add.push((uid, tid, interval));
                     }
                     DiffFlag::Mod(tid, interval) => {
                         // Remove old task first
-                        if let Err(e) = delay_timer.remove_task(tid) {
+                        let value = self.delay_timer.write().remove_task(tid);
+                        if let Err(e) = value {
                             logging!(
                                 warn,
                                 Type::Timer,
@@ -243,7 +240,7 @@ impl Timer {
                             last_run: chrono::Local::now().timestamp(),
                         };
 
-                        timer_map.insert(uid.clone(), task);
+                        self.timer_map.write().insert(uid.clone(), task);
                         operations_to_add.push((uid, tid, interval));
                     }
                 }
@@ -251,12 +248,10 @@ impl Timer {
         } // Locks are dropped here
 
         // Now perform async operations without holding locks
+        let delay_timer = self.delay_timer.write();
         for (uid, tid, interval) in operations_to_add {
-            // Re-acquire locks for individual operations
-            let mut delay_timer = self.delay_timer.write();
-            if let Err(e) = self.add_task(&mut delay_timer, uid.clone(), tid, interval) {
+            if let Err(e) = self.add_task(&delay_timer, uid.clone(), tid, interval) {
                 logging_error!(Type::Timer, "Failed to add task for uid {}: {}", uid, e);
-
                 // Rollback on failure - remove from timer_map
                 self.timer_map.write().remove(&uid);
             } else {
@@ -371,7 +366,7 @@ impl Timer {
     /// Add a timer task with better error handling
     fn add_task(
         &self,
-        delay_timer: &mut DelayTimer,
+        delay_timer: &DelayTimer,
         uid: String,
         tid: TaskID,
         minutes: u64,
@@ -393,7 +388,7 @@ impl Timer {
             .spawn_async_routine(move || {
                 let uid = uid.clone();
                 Box::pin(async move {
-                    Self::wait_until_sysopt(Duration::from_millis(1000)).await;
+                    Self::wait_until_resolve_done(Duration::from_millis(5000)).await;
                     Self::async_task(&uid).await;
                 }) as Pin<Box<dyn std::future::Future<Output = ()> + Send>>
             })
@@ -524,11 +519,11 @@ impl Timer {
         Self::emit_update_event(uid, false);
     }
 
-    async fn wait_until_sysopt(max_wait: Duration) {
+    async fn wait_until_resolve_done(max_wait: Duration) {
         let _ = timeout(max_wait, async {
-            while !Sysopt::global().is_initialed() {
-                logging!(warn, Type::Timer, "Waiting for Sysopt to be initialized...");
-                sleep(Duration::from_millis(30)).await;
+            while !is_resolve_done() {
+                logging!(debug, Type::Timer, "Waiting for resolve to be done...");
+                sleep(Duration::from_millis(200)).await;
             }
         })
         .await;

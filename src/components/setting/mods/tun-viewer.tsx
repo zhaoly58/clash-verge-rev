@@ -13,6 +13,7 @@ import { useImperativeHandle, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { BaseDialog, DialogRef, Switch } from "@/components/base";
+import { TooltipIcon } from "@/components/base/base-tooltip-icon";
 import { useClash } from "@/hooks/use-clash";
 import { enhanceProfiles } from "@/services/cmds";
 import { showNotice } from "@/services/noticeService";
@@ -32,6 +33,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
     stack: "mixed",
     device: OS === "macos" ? "utun1024" : "Mihomo",
     autoRoute: true,
+    autoRedirect: OS === "linux",
     autoDetectInterface: true,
     dnsHijack: ["any:53"],
     strictRoute: false,
@@ -41,10 +43,15 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
   useImperativeHandle(ref, () => ({
     open: () => {
       setOpen(true);
+      const nextAutoRoute = clash?.tun["auto-route"] ?? true;
+      const rawAutoRedirect = clash?.tun["auto-redirect"] ?? true;
+      const computedAutoRedirect =
+        OS === "linux" ? (nextAutoRoute ? rawAutoRedirect : false) : false;
       setValues({
         stack: clash?.tun.stack ?? "gvisor",
         device: clash?.tun.device ?? (OS === "macos" ? "utun1024" : "Mihomo"),
-        autoRoute: clash?.tun["auto-route"] ?? true,
+        autoRoute: nextAutoRoute,
+        autoRedirect: computedAutoRedirect,
         autoDetectInterface: clash?.tun["auto-detect-interface"] ?? true,
         dnsHijack: clash?.tun["dns-hijack"] ?? ["any:53"],
         strictRoute: clash?.tun["strict-route"] ?? false,
@@ -56,7 +63,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
 
   const onSave = useLockFn(async () => {
     try {
-      const tun = {
+      const tun: IConfigData["tun"] = {
         stack: values.stack,
         device:
           values.device === ""
@@ -65,6 +72,11 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
               : "Mihomo"
             : values.device,
         "auto-route": values.autoRoute,
+        ...(OS === "linux"
+          ? {
+              "auto-redirect": values.autoRedirect,
+            }
+          : {}),
         "auto-detect-interface": values.autoDetectInterface,
         "dns-hijack": values.dnsHijack[0] === "" ? [] : values.dnsHijack,
         "strict-route": values.strictRoute,
@@ -80,13 +92,13 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
       );
       try {
         await enhanceProfiles();
-        showNotice("success", t("Settings Applied"));
+        showNotice.success("settings.modals.tun.messages.applied");
       } catch (err: any) {
-        showNotice("error", err.message || err.toString());
+        showNotice.error(err);
       }
       setOpen(false);
     } catch (err: any) {
-      showNotice("error", err.message || err.toString());
+      showNotice.error(err);
     }
   });
 
@@ -95,15 +107,20 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
       open={open}
       title={
         <Box display="flex" justifyContent="space-between" gap={1}>
-          <Typography variant="h6">{t("Tun Mode")}</Typography>
+          <Typography variant="h6">{t("settings.modals.tun.title")}</Typography>
           <Button
             variant="outlined"
             size="small"
             onClick={async () => {
-              const tun = {
+              const tun: IConfigData["tun"] = {
                 stack: "gvisor",
                 device: OS === "macos" ? "utun1024" : "Mihomo",
                 "auto-route": true,
+                ...(OS === "linux"
+                  ? {
+                      "auto-redirect": true,
+                    }
+                  : {}),
                 "auto-detect-interface": true,
                 "dns-hijack": ["any:53"],
                 "strict-route": false,
@@ -113,6 +130,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
                 stack: "gvisor",
                 device: OS === "macos" ? "utun1024" : "Mihomo",
                 autoRoute: true,
+                autoRedirect: OS === "linux" ? true : false,
                 autoDetectInterface: true,
                 dnsHijack: ["any:53"],
                 strictRoute: false,
@@ -128,20 +146,20 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
               );
             }}
           >
-            {t("Reset to Default")}
+            {t("shared.actions.resetToDefault")}
           </Button>
         </Box>
       }
       contentSx={{ width: 450 }}
-      okBtn={t("Save")}
-      cancelBtn={t("Cancel")}
+      okBtn={t("shared.actions.save")}
+      cancelBtn={t("shared.actions.cancel")}
       onClose={() => setOpen(false)}
       onCancel={() => setOpen(false)}
       onOk={onSave}
     >
       <List>
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Stack")} />
+          <ListItemText primary={t("settings.modals.tun.fields.stack")} />
           <StackModeSwitch
             value={values.stack}
             onChange={(value) => {
@@ -154,7 +172,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Device")} />
+          <ListItemText primary={t("settings.modals.tun.fields.device")} />
           <TextField
             autoComplete="new-password"
             size="small"
@@ -171,16 +189,47 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Auto Route")} />
+          <ListItemText primary={t("settings.modals.tun.fields.autoRoute")} />
           <Switch
             edge="end"
             checked={values.autoRoute}
-            onChange={(_, c) => setValues((v) => ({ ...v, autoRoute: c }))}
+            onChange={(_, c) =>
+              setValues((v) => ({
+                ...v,
+                autoRoute: c,
+                autoRedirect: c ? v.autoRedirect : false,
+              }))
+            }
           />
         </ListItem>
 
+        {OS === "linux" && (
+          <ListItem sx={{ padding: "5px 2px" }}>
+            <ListItemText
+              primary={t("settings.modals.tun.fields.autoRedirect")}
+              sx={{ maxWidth: "fit-content" }}
+            />
+            <TooltipIcon
+              title={t("settings.modals.tun.tooltips.autoRedirect")}
+              sx={{ opacity: values.autoRoute ? 0.7 : 0.3 }}
+            />
+            <Switch
+              edge="end"
+              checked={values.autoRedirect}
+              onChange={(_, c) =>
+                setValues((v) => ({
+                  ...v,
+                  autoRedirect: v.autoRoute ? c : v.autoRedirect,
+                }))
+              }
+              disabled={!values.autoRoute}
+              sx={{ marginLeft: "auto" }}
+            />
+          </ListItem>
+        )}
+
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Strict Route")} />
+          <ListItemText primary={t("settings.modals.tun.fields.strictRoute")} />
           <Switch
             edge="end"
             checked={values.strictRoute}
@@ -189,7 +238,9 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Auto Detect Interface")} />
+          <ListItemText
+            primary={t("settings.modals.tun.fields.autoDetectInterface")}
+          />
           <Switch
             edge="end"
             checked={values.autoDetectInterface}
@@ -200,7 +251,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("DNS Hijack")} />
+          <ListItemText primary={t("settings.modals.tun.fields.dnsHijack")} />
           <TextField
             autoComplete="new-password"
             size="small"
@@ -209,7 +260,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
             spellCheck="false"
             sx={{ width: 250 }}
             value={values.dnsHijack.join(",")}
-            placeholder="Please use , to separate multiple DNS servers"
+            placeholder={t("settings.modals.tun.tooltips.dnsHijack")}
             onChange={(e) =>
               setValues((v) => ({ ...v, dnsHijack: e.target.value.split(",") }))
             }
@@ -217,7 +268,7 @@ export function TunViewer({ ref }: { ref?: Ref<DialogRef> }) {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("MTU")} />
+          <ListItemText primary={t("settings.modals.tun.fields.mtu")} />
           <TextField
             autoComplete="new-password"
             size="small"

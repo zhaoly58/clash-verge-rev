@@ -1,7 +1,7 @@
 import { useLockFn } from "ahooks";
 import { useCallback, useMemo } from "react";
 import {
-  closeConnections,
+  closeConnection,
   getConnections,
   selectNodeForGroup,
 } from "tauri-plugin-mihomo-api";
@@ -9,6 +9,7 @@ import {
 import { useProfiles } from "@/hooks/use-profiles";
 import { useVerge } from "@/hooks/use-verge";
 import { syncTrayProxySelection } from "@/services/cmds";
+import { debugLog } from "@/utils/debug";
 
 // 缓存连接清理
 const cleanupConnections = async (previousProxy: string) => {
@@ -16,11 +17,11 @@ const cleanupConnections = async (previousProxy: string) => {
     const { connections } = await getConnections();
     const cleanupPromises = (connections ?? [])
       .filter((conn) => conn.chains.includes(previousProxy))
-      .map((conn) => closeConnections(conn.id));
+      .map((conn) => closeConnection(conn.id));
 
     if (cleanupPromises.length > 0) {
       await Promise.allSettled(cleanupPromises);
-      console.log(`[ProxySelection] 清理了 ${cleanupPromises.length} 个连接`);
+      debugLog(`[ProxySelection] 清理了 ${cleanupPromises.length} 个连接`);
     }
   } catch (error) {
     console.warn("[ProxySelection] 连接清理失败:", error);
@@ -57,7 +58,7 @@ export const useProxySelection = (options: ProxySelectionOptions = {}) => {
       previousProxy?: string,
       skipConfigSave: boolean = false,
     ) => {
-      console.log(`[ProxySelection] 代理切换: ${groupName} -> ${proxyName}`);
+      debugLog(`[ProxySelection] 代理切换: ${groupName} -> ${proxyName}`);
 
       try {
         if (current && !skipConfigSave) {
@@ -77,7 +78,7 @@ export const useProxySelection = (options: ProxySelectionOptions = {}) => {
 
         await selectNodeForGroup(groupName, proxyName);
         await syncTrayProxySelection();
-        console.log(
+        debugLog(
           `[ProxySelection] 代理和状态同步完成: ${groupName} -> ${proxyName}`,
         );
 
@@ -100,7 +101,7 @@ export const useProxySelection = (options: ProxySelectionOptions = {}) => {
           await selectNodeForGroup(groupName, proxyName);
           await syncTrayProxySelection();
           onSuccess?.();
-          console.log(
+          debugLog(
             `[ProxySelection] 代理切换回退成功: ${groupName} -> ${proxyName}`,
           );
         } catch (fallbackError) {

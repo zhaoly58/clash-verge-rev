@@ -1,10 +1,10 @@
 use super::{PrfOption, prfitem::PrfItem};
 use crate::utils::{
-    dirs::{self, PathBufExec},
+    dirs::{self, PathBufExec as _},
     help,
 };
-use crate::{logging, utils::logging::Type};
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
+use clash_verge_logging::{Type, logging};
 use serde::{Deserialize, Serialize};
 use serde_yaml_ng::Mapping;
 use smartstring::alias::String;
@@ -19,6 +19,12 @@ pub struct IProfiles {
 
     /// profile list
     pub items: Option<Vec<PrfItem>>,
+}
+
+pub struct IProfilePreview<'a> {
+    pub uid: &'a String,
+    pub name: &'a String,
+    pub is_current: bool,
 }
 
 /// 清理结果
@@ -87,7 +93,7 @@ impl IProfiles {
     }
 
     /// 只修改current，valid和chain
-    pub fn patch_config(&mut self, patch: &IProfiles) {
+    pub fn patch_config(&mut self, patch: &Self) {
         if self.items.is_none() {
             self.items = Some(vec![]);
         }
@@ -102,12 +108,12 @@ impl IProfiles {
         }
     }
 
-    pub fn get_current(&self) -> Option<&String> {
+    pub const fn get_current(&self) -> Option<&String> {
         self.current.as_ref()
     }
 
     /// get items ref
-    pub fn get_items(&self) -> Option<&Vec<PrfItem>> {
+    pub const fn get_items(&self) -> Option<&Vec<PrfItem>> {
         self.items.as_ref()
     }
 
@@ -367,14 +373,20 @@ impl IProfiles {
         self.current.as_ref() == Some(index)
     }
 
-    /// 获取所有的profiles(uid，名称)
-    pub fn all_profile_uid_and_name(&self) -> Option<Vec<(&String, &String)>> {
+    /// 获取所有的profiles(uid，名称, 是否为 current)
+    pub fn profiles_preview(&self) -> Option<Vec<IProfilePreview<'_>>> {
         self.items.as_ref().map(|items| {
             items
                 .iter()
                 .filter_map(|e| {
                     if let (Some(uid), Some(name)) = (e.uid.as_ref(), e.name.as_ref()) {
-                        Some((uid, name))
+                        let is_current = self.is_current_profile_index(uid);
+                        let preview = IProfilePreview {
+                            uid,
+                            name,
+                            is_current,
+                        };
+                        Some(preview)
                     } else {
                         None
                     }

@@ -1,10 +1,10 @@
 use crate::{
     config::Config,
     core::tray,
-    logging, logging_error,
-    utils::{dirs, init::service_writer_config, logging::Type},
+    utils::{dirs, init::service_writer_config},
 };
-use anyhow::{Context, Result, bail};
+use anyhow::{Context as _, Result, bail};
+use clash_verge_logging::{Type, logging, logging_error};
 use clash_verge_service_ipc::CoreConfig;
 use compact_str::CompactString;
 use once_cell::sync::Lazy;
@@ -37,7 +37,7 @@ async fn uninstall_service() -> Result<()> {
 
     use deelevate::{PrivilegeLevel, Token};
     use runas::Command as RunasCommand;
-    use std::os::windows::process::CommandExt;
+    use std::os::windows::process::CommandExt as _;
 
     let binary_path = dirs::service_path()?;
     let uninstall_path = binary_path.with_file_name("clash-verge-service-uninstall.exe");
@@ -72,7 +72,7 @@ async fn install_service() -> Result<()> {
 
     use deelevate::{PrivilegeLevel, Token};
     use runas::Command as RunasCommand;
-    use std::os::windows::process::CommandExt;
+    use std::os::windows::process::CommandExt as _;
 
     let binary_path = dirs::service_path()?;
     let install_path = binary_path.with_file_name("clash-verge-service-install.exe");
@@ -122,7 +122,6 @@ async fn reinstall_service() -> Result<()> {
 #[cfg(target_os = "linux")]
 async fn uninstall_service() -> Result<()> {
     logging!(info, Type::Service, "uninstall service");
-    use users::get_effective_uid;
 
     let uninstall_path =
         tauri::utils::platform::current_exe()?.with_file_name("clash-verge-service-uninstall");
@@ -134,13 +133,31 @@ async fn uninstall_service() -> Result<()> {
     let uninstall_shell: String = uninstall_path.to_string_lossy().replace(" ", "\\ ");
 
     let elevator = crate::utils::help::linux_elevator();
-    let status = match get_effective_uid() {
-        0 => StdCommand::new(uninstall_shell).status()?,
-        _ => StdCommand::new(elevator.clone())
+    let status = if linux_running_as_root() {
+        StdCommand::new(&uninstall_path).status()?
+    } else {
+        let result = StdCommand::new(&elevator)
             .arg("sh")
             .arg("-c")
-            .arg(uninstall_shell)
-            .status()?,
+            .arg(&uninstall_shell)
+            .status()?;
+
+        // 如果 pkexec 执行失败，回退到 sudo
+        if !result.success() && elevator.contains("pkexec") {
+            logging!(
+                warn,
+                Type::Service,
+                "pkexec failed with code {}, falling back to sudo",
+                result.code().unwrap_or(-1)
+            );
+            StdCommand::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg(&uninstall_shell)
+                .status()?
+        } else {
+            result
+        }
     };
     logging!(
         info,
@@ -163,7 +180,6 @@ async fn uninstall_service() -> Result<()> {
 #[allow(clippy::unused_async)]
 async fn install_service() -> Result<()> {
     logging!(info, Type::Service, "install service");
-    use users::get_effective_uid;
 
     let install_path =
         tauri::utils::platform::current_exe()?.with_file_name("clash-verge-service-install");
@@ -175,13 +191,31 @@ async fn install_service() -> Result<()> {
     let install_shell: String = install_path.to_string_lossy().replace(" ", "\\ ");
 
     let elevator = crate::utils::help::linux_elevator();
-    let status = match get_effective_uid() {
-        0 => StdCommand::new(install_shell).status()?,
-        _ => StdCommand::new(elevator.clone())
+    let status = if linux_running_as_root() {
+        StdCommand::new(&install_path).status()?
+    } else {
+        let result = StdCommand::new(&elevator)
             .arg("sh")
             .arg("-c")
-            .arg(install_shell)
-            .status()?,
+            .arg(&install_shell)
+            .status()?;
+
+        // 如果 pkexec 执行失败，回退到 sudo
+        if !result.success() && elevator.contains("pkexec") {
+            logging!(
+                warn,
+                Type::Service,
+                "pkexec failed with code {}, falling back to sudo",
+                result.code().unwrap_or(-1)
+            );
+            StdCommand::new("sudo")
+                .arg("sh")
+                .arg("-c")
+                .arg(&install_shell)
+                .status()?
+        } else {
+            result
+        }
     };
     logging!(
         info,
@@ -218,10 +252,16 @@ async fn reinstall_service() -> Result<()> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn linux_running_as_root() -> bool {
+    use crate::core::handle;
+    use tauri_plugin_clash_verge_sysinfo::is_current_app_handle_admin;
+    let app_handle = handle::Handle::app_handle();
+    is_current_app_handle_admin(app_handle)
+}
+
 #[cfg(target_os = "macos")]
 async fn uninstall_service() -> Result<()> {
-    use crate::utils::i18n::t;
-
     logging!(info, Type::Service, "uninstall service");
 
     let binary_path = dirs::service_path()?;
@@ -233,7 +273,9 @@ async fn uninstall_service() -> Result<()> {
 
     let uninstall_shell: String = uninstall_path.to_string_lossy().into_owned();
 
-    let prompt = t("Service Administrator Prompt").await;
+    crate::utils::i18n::sync_locale().await;
+
+    let prompt = rust_i18n::t!("service.adminPrompt").to_string();
     let command = format!(
         r#"do shell script "sudo '{uninstall_shell}'" with administrator privileges with prompt "{prompt}""#
     );
@@ -256,8 +298,6 @@ async fn uninstall_service() -> Result<()> {
 
 #[cfg(target_os = "macos")]
 async fn install_service() -> Result<()> {
-    use crate::utils::i18n::t;
-
     logging!(info, Type::Service, "install service");
 
     let binary_path = dirs::service_path()?;
@@ -269,7 +309,9 @@ async fn install_service() -> Result<()> {
 
     let install_shell: String = install_path.to_string_lossy().into_owned();
 
-    let prompt = t("Service Administrator Prompt").await;
+    crate::utils::i18n::sync_locale().await;
+
+    let prompt = rust_i18n::t!("service.adminPrompt").to_string();
     let command = format!(
         r#"do shell script "sudo '{install_shell}'" with administrator privileges with prompt "{prompt}""#
     );
@@ -449,12 +491,12 @@ impl ServiceManager {
         Self(ServiceStatus::Unavailable("Need Checks".into()))
     }
 
-    pub fn config() -> Option<clash_verge_service_ipc::IpcConfig> {
-        Some(clash_verge_service_ipc::IpcConfig {
+    pub const fn config() -> clash_verge_service_ipc::IpcConfig {
+        clash_verge_service_ipc::IpcConfig {
             default_timeout: Duration::from_millis(30),
             retry_delay: Duration::from_millis(250),
             max_retries: 6,
-        })
+        }
     }
 
     pub async fn init(&mut self) -> Result<()> {
@@ -514,6 +556,13 @@ impl ServiceManager {
             ServiceStatus::InstallRequired => {
                 logging!(info, Type::Service, "需要安装服务，执行安装流程");
                 install_service().await?;
+                // compatible with older service version, force reinstall if service is unavailable
+                // wait for service server is running
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                if is_service_available().await.is_err() {
+                    logging!(info, Type::Service, "服务需要强制重装，执行强制重装流程");
+                    force_reinstall_service().await?;
+                }
                 self.0 = ServiceStatus::Ready;
             }
             ServiceStatus::UninstallRequired => {

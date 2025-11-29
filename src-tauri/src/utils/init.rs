@@ -1,37 +1,37 @@
 // #[cfg(not(feature = "tracing"))]
-#[cfg(not(feature = "tauri-dev"))]
-use crate::utils::logging::NoModuleFilter;
 use crate::{
-    config::*,
+    config::{Config, IClashTemp, IProfiles, IVerge},
     constants,
     core::handle,
     logging,
     process::AsyncHandler,
     utils::{
-        dirs::{self, PathBufExec, service_log_dir, sidecar_log_dir},
+        dirs::{self, PathBufExec as _, service_log_dir, sidecar_log_dir},
         help,
-        logging::Type,
     },
 };
 use anyhow::Result;
-use chrono::{Local, TimeZone};
+use chrono::{Local, TimeZone as _};
+#[cfg(not(feature = "tauri-dev"))]
+use clash_verge_logging::NoModuleFilter;
+use clash_verge_logging::Type;
 use clash_verge_service_ipc::WriterConfig;
 use flexi_logger::writers::FileLogWriter;
 use flexi_logger::{Cleanup, Criterion, FileSpec};
 #[cfg(not(feature = "tauri-dev"))]
-use flexi_logger::{Duplicate, LogSpecBuilder, Logger};
-use std::{path::PathBuf, str::FromStr};
-use tauri_plugin_shell::ShellExt;
+use flexi_logger::{Duplicate, LogSpecBuilder, Logger, LoggerHandle};
+use std::{path::PathBuf, str::FromStr as _};
+use tauri_plugin_shell::ShellExt as _;
 use tokio::fs;
 use tokio::fs::DirEntry;
 
 /// initialize this instance's log file
 #[cfg(not(feature = "tauri-dev"))]
-pub async fn init_logger() -> Result<()> {
+pub async fn init_logger() -> Result<LoggerHandle> {
     // TODO 提供 runtime 级别实时修改
     let (log_level, log_max_size, log_max_count) = {
         let verge_guard = Config::verge().await;
-        let verge = verge_guard.latest_arc();
+        let verge = verge_guard.data_arc();
         (
             verge.get_log_level(),
             verge.app_log_max_size.unwrap_or(128),
@@ -47,11 +47,9 @@ pub async fn init_logger() -> Result<()> {
         .unwrap_or(log_level);
     spec.default(level);
     #[cfg(feature = "tracing")]
-    spec.module("tauri", log::LevelFilter::Debug);
-    #[cfg(feature = "tracing")]
-    spec.module("wry", log::LevelFilter::Off);
-    #[cfg(feature = "tracing")]
-    spec.module("tauri_plugin_mihomo", log::LevelFilter::Off);
+    spec.module("tauri", log::LevelFilter::Debug)
+        .module("wry", log::LevelFilter::Off)
+        .module("tauri_plugin_mihomo", log::LevelFilter::Off);
     let spec = spec.build();
 
     let logger = Logger::with(spec)
@@ -68,28 +66,35 @@ pub async fn init_logger() -> Result<()> {
             Cleanup::KeepLogFiles(log_max_count),
         );
     #[cfg(not(feature = "tracing"))]
-    let logger = logger.filter(Box::new(NoModuleFilter(&["wry", "tauri"])));
+    let logger = logger.filter(Box::new(NoModuleFilter(&[
+        "wry",
+        "tauri",
+        "tokio_tungstenite",
+        "tungstenite",
+    ])));
     #[cfg(feature = "tracing")]
     let logger = logger.filter(Box::new(NoModuleFilter(&[
         "wry",
         "tauri_plugin_mihomo",
+        "tokio_tungstenite",
+        "tungstenite",
         "kode_bridge",
     ])));
 
-    let _handle = logger.start()?;
+    let handle = logger.start()?;
 
     // TODO 全局 logger handle 控制
     // GlobalLoggerProxy::global().set_inner(handle);
     // TODO 提供前端设置等级，热更新等级
     // logger.parse_new_spec(spec)
 
-    Ok(())
+    Ok(handle)
 }
 
 pub async fn sidecar_writer() -> Result<FileLogWriter> {
     let (log_max_size, log_max_count) = {
         let verge_guard = Config::verge().await;
-        let verge = verge_guard.latest_arc();
+        let verge = verge_guard.data_arc();
         (
             verge.app_log_max_size.unwrap_or(128),
             verge.app_log_max_count.unwrap_or(8),
@@ -117,7 +122,7 @@ pub async fn sidecar_writer() -> Result<FileLogWriter> {
 pub async fn service_writer_config() -> Result<WriterConfig> {
     let (log_max_size, log_max_count) = {
         let verge_guard = Config::verge().await;
-        let verge = verge_guard.latest_arc();
+        let verge = verge_guard.data_arc();
         (
             verge.app_log_max_size.unwrap_or(128),
             verge.app_log_max_count.unwrap_or(8),
@@ -142,7 +147,7 @@ pub async fn delete_log() -> Result<()> {
 
     let auto_log_clean = {
         let verge = Config::verge().await;
-        let verge = verge.latest_arc();
+        let verge = verge.data_arc();
         verge.auto_log_clean.unwrap_or(0)
     };
 
@@ -466,7 +471,7 @@ pub async fn init_resources() -> Result<()> {
 #[cfg(target_os = "windows")]
 pub fn init_scheme() -> Result<()> {
     use tauri::utils::platform::current_exe;
-    use winreg::{RegKey, enums::*};
+    use winreg::{RegKey, enums::HKEY_CURRENT_USER};
 
     let app_exe = current_exe()?;
     let app_exe = dunce::canonicalize(app_exe)?;
@@ -506,7 +511,7 @@ pub fn init_scheme() -> Result<()> {
     Ok(())
 }
 #[cfg(target_os = "macos")]
-pub fn init_scheme() -> Result<()> {
+pub const fn init_scheme() -> Result<()> {
     Ok(())
 }
 
@@ -517,7 +522,7 @@ pub async fn startup_script() -> Result<()> {
     let app_handle = handle::Handle::app_handle();
     let script_path = {
         let verge = Config::verge().await;
-        let verge = verge.latest_arc();
+        let verge = verge.data_arc();
         verge.startup_script.clone().unwrap_or_else(|| "".into())
     };
 

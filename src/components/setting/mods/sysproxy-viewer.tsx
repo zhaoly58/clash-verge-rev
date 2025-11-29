@@ -20,15 +20,18 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import useSWR, { mutate } from "swr";
-import { getBaseConfig } from "tauri-plugin-mihomo-api";
+import { mutate } from "swr";
 
 import { BaseDialog, DialogRef, Switch } from "@/components/base";
 import { BaseFieldset } from "@/components/base/base-fieldset";
 import { TooltipIcon } from "@/components/base/base-tooltip-icon";
 import { EditorViewer } from "@/components/profile/editor-viewer";
+import {
+  useClashConfig,
+  useSystemProxyAddress,
+  useSystemProxyData,
+} from "@/hooks/app-data";
 import { useVerge } from "@/hooks/use-verge";
-import { useAppData } from "@/providers/app-data-context";
 import {
   getAutotemProxy,
   getNetworkInterfacesInfo,
@@ -37,6 +40,7 @@ import {
   patchVergeConfig,
 } from "@/services/cmds";
 import { showNotice } from "@/services/noticeService";
+import { debugLog } from "@/utils/debug";
 import getSystem from "@/utils/get-system";
 
 const sleep = (ms: number) =>
@@ -92,9 +96,6 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
   const { verge, patchVerge, mutateVerge } = useVerge();
   const [hostOptions, setHostOptions] = useState<string[]>([]);
 
-  type SysProxy = Awaited<ReturnType<typeof getSystemProxy>>;
-  const [sysproxy, setSysproxy] = useState<SysProxy>();
-
   type AutoProxy = Awaited<ReturnType<typeof getAutotemProxy>>;
   const [autoproxy, setAutoproxy] = useState<AutoProxy>();
 
@@ -124,17 +125,13 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
       return "localhost;127.*;192.168.*;10.*;172.16.*;172.17.*;172.18.*;172.19.*;172.20.*;172.21.*;172.22.*;172.23.*;172.24.*;172.25.*;172.26.*;172.27.*;172.28.*;172.29.*;172.30.*;172.31.*;<local>";
     }
     if (getSystem() === "linux") {
-      return "localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.29.0.0/16,::1";
+      return "localhost,127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,::1";
     }
-    return "127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,172.29.0.0/16,localhost,*.local,*.crashlytics.com,<local>";
+    return "127.0.0.1,192.168.0.0/16,10.0.0.0/8,172.16.0.0/12,localhost,*.local,*.crashlytics.com,<local>";
   };
 
-  const { data: clashConfig } = useSWR("getClashConfig", getBaseConfig, {
-    revalidateOnFocus: false,
-    revalidateIfStale: true,
-    dedupingInterval: 1000,
-    errorRetryInterval: 5000,
-  });
+  const { clashConfig } = useClashConfig();
+  const { sysproxy, refreshSysproxy } = useSystemProxyData();
 
   const prevMixedPortRef = useRef(clashConfig?.mixedPort);
 
@@ -160,15 +157,18 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
             mutate("getAutotemProxy"),
           ]);
         }
-      } catch (err: any) {
-        showNotice("error", err.toString());
+      } catch (err) {
+        showNotice.error(err);
       }
     };
 
     updateProxy();
   }, [clashConfig?.mixedPort, value.pac]);
 
-  const { systemProxyAddress } = useAppData();
+  const systemProxyAddress = useSystemProxyAddress({
+    clashConfig,
+    sysproxy,
+  });
 
   // 为当前状态计算系统代理地址
   const getSystemProxyAddress = useMemo(() => {
@@ -209,7 +209,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
         pac_content: pac_file_content ?? DEFAULT_PAC,
         proxy_host: proxy_host ?? "127.0.0.1",
       });
-      getSystemProxy().then((p) => setSysproxy(p));
+      void refreshSysproxy();
       getAutotemProxy().then((p) => setAutoproxy(p));
       fetchNetworkInterfaces();
     },
@@ -239,7 +239,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
       let hostname = "";
       try {
         hostname = await getSystemHostname();
-        console.log("获取到主机名:", hostname);
+        debugLog("获取到主机名:", hostname);
       } catch (err) {
         console.error("获取主机名失败:", err);
       }
@@ -253,12 +253,12 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
         if (hostname !== "localhost" && hostname !== "127.0.0.1") {
           hostname = hostname + ".local";
           options.push(hostname);
-          console.log("主机名已添加到选项中:", hostname);
+          debugLog("主机名已添加到选项中:", hostname);
         } else {
-          console.log("主机名与已有选项重复:", hostname);
+          debugLog("主机名与已有选项重复:", hostname);
         }
       } else {
-        console.log("主机名为空");
+        debugLog("主机名为空");
       }
 
       // 添加IP地址
@@ -266,7 +266,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
 
       // 去重
       const uniqueOptions = Array.from(new Set(options));
-      console.log("最终选项列表:", uniqueOptions);
+      debugLog("最终选项列表:", uniqueOptions);
       setHostOptions(uniqueOptions);
     } catch (error) {
       console.error("获取网络接口失败:", error);
@@ -277,14 +277,11 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
 
   const onSave = useLockFn(async () => {
     if (value.duration < 1) {
-      showNotice(
-        "error",
-        t("Proxy Daemon Duration Cannot be Less than 1 Second"),
-      );
+      showNotice.error("settings.modals.sysproxy.messages.durationTooShort");
       return;
     }
     if (value.bypass && !validReg.test(value.bypass)) {
-      showNotice("error", t("Invalid Bypass Format"));
+      showNotice.error("settings.modals.sysproxy.messages.invalidBypass");
       return;
     }
 
@@ -301,7 +298,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
       !ipv6Regex.test(value.proxy_host) &&
       !hostnameRegex.test(value.proxy_host)
     ) {
-      showNotice("error", t("Invalid Proxy Host Format"));
+      showNotice.error("settings.modals.sysproxy.messages.invalidProxyHost");
       return;
     }
 
@@ -401,10 +398,10 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
             console.warn("代理状态更新失败:", err);
           }
         }, 50);
-      } catch (err: any) {
+      } catch (err) {
         console.error("配置保存失败:", err);
         mutateVerge();
-        showNotice("error", err.toString());
+        showNotice.error(err);
         // setOpen(true);
       }
     });
@@ -413,10 +410,10 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
   return (
     <BaseDialog
       open={open}
-      title={t("System Proxy Setting")}
+      title={t("settings.modals.sysproxy.title")}
       contentSx={{ width: 450, maxHeight: 565 }}
-      okBtn={t("Save")}
-      cancelBtn={t("Cancel")}
+      okBtn={t("shared.actions.save")}
+      cancelBtn={t("shared.actions.cancel")}
       onClose={() => setOpen(false)}
       onCancel={() => setOpen(false)}
       onOk={onSave}
@@ -424,28 +421,37 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
       disableOk={saving}
     >
       <List>
-        <BaseFieldset label={t("Current System Proxy")} padding="15px 10px">
+        <BaseFieldset
+          label={t("settings.modals.sysproxy.fieldsets.currentStatus")}
+          padding="15px 10px"
+        >
           <FlexBox>
-            <Typography className="label">{t("Enable status")}</Typography>
+            <Typography className="label">
+              {t("settings.modals.sysproxy.fields.enableStatus")}
+            </Typography>
             <Typography className="value">
               {value.pac
                 ? autoproxy?.enable
-                  ? t("Enabled")
-                  : t("Disabled")
+                  ? t("shared.statuses.enabled")
+                  : t("shared.statuses.disabled")
                 : sysproxy?.enable
-                  ? t("Enabled")
-                  : t("Disabled")}
+                  ? t("shared.statuses.enabled")
+                  : t("shared.statuses.disabled")}
             </Typography>
           </FlexBox>
           {!value.pac && (
             <FlexBox>
-              <Typography className="label">{t("Server Addr")}</Typography>
+              <Typography className="label">
+                {t("settings.modals.sysproxy.fields.serverAddr")}
+              </Typography>
               <Typography className="value">{getSystemProxyAddress}</Typography>
             </FlexBox>
           )}
           {value.pac && (
             <FlexBox>
-              <Typography className="label">{t("PAC URL")}</Typography>
+              <Typography className="label">
+                {t("settings.modals.sysproxy.fields.pacUrl")}
+              </Typography>
               <Typography className="value">
                 {getCurrentPacUrl || "-"}
               </Typography>
@@ -453,7 +459,9 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
           )}
         </BaseFieldset>
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Proxy Host")} />
+          <ListItemText
+            primary={t("settings.modals.sysproxy.fields.proxyHost")}
+          />
           <Autocomplete
             size="small"
             sx={{ width: 150 }}
@@ -478,7 +486,9 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
           />
         </ListItem>
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Use PAC Mode")} />
+          <ListItemText
+            primary={t("settings.modals.sysproxy.fields.usePacMode")}
+          />
           <Switch
             edge="end"
             disabled={!enabled}
@@ -489,10 +499,13 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
 
         <ListItem sx={{ padding: "5px 2px" }}>
           <ListItemText
-            primary={t("Proxy Guard")}
+            primary={t("settings.modals.sysproxy.fields.proxyGuard")}
             sx={{ maxWidth: "fit-content" }}
           />
-          <TooltipIcon title={t("Proxy Guard Info")} sx={{ opacity: "0.7" }} />
+          <TooltipIcon
+            title={t("settings.modals.sysproxy.tooltips.proxyGuard")}
+            sx={{ opacity: "0.7" }}
+          />
           <Switch
             edge="end"
             disabled={!enabled}
@@ -503,7 +516,9 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
         </ListItem>
 
         <ListItem sx={{ padding: "5px 2px" }}>
-          <ListItemText primary={t("Guard Duration")} />
+          <ListItemText
+            primary={t("settings.modals.sysproxy.fields.guardDuration")}
+          />
           <TextField
             disabled={!enabled}
             size="small"
@@ -524,7 +539,11 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
         </ListItem>
         {!value.pac && (
           <ListItem sx={{ padding: "5px 2px" }}>
-            <ListItemText primary={t("Always use Default Bypass")} />
+            <ListItemText
+              primary={t(
+                "settings.modals.sysproxy.fields.alwaysUseDefaultBypass",
+              )}
+            />
             <Switch
               edge="end"
               disabled={!enabled}
@@ -543,7 +562,9 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
 
         {!value.pac && !value.use_default && (
           <>
-            <ListItemText primary={t("Proxy Bypass")} />
+            <ListItemText
+              primary={t("settings.modals.sysproxy.fields.proxyBypass")}
+            />
             <TextField
               error={value.bypass ? !validReg.test(value.bypass) : false}
               disabled={!enabled}
@@ -561,7 +582,9 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
 
         {!value.pac && value.use_default && (
           <>
-            <ListItemText primary={t("Bypass")} />
+            <ListItemText
+              primary={t("settings.modals.sysproxy.fields.bypass")}
+            />
             <FlexBox>
               <TextField
                 disabled={true}
@@ -578,7 +601,7 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
         {value.pac && (
           <ListItem sx={{ padding: "5px 2px", alignItems: "start" }}>
             <ListItemText
-              primary={t("PAC Script Content")}
+              primary={t("settings.modals.sysproxy.fields.pacScriptContent")}
               sx={{ padding: "3px 0" }}
             />
             <Button
@@ -588,13 +611,14 @@ export const SysproxyViewer = forwardRef<DialogRef>((props, ref) => {
                 setEditorOpen(true);
               }}
             >
-              {t("Edit")} PAC
+              {t("settings.modals.sysproxy.actions.editPac")}
             </Button>
             {editorOpen && (
               <EditorViewer
                 open={true}
-                title={`${t("Edit")} PAC`}
-                initialData={Promise.resolve(value.pac_content ?? "")}
+                title={t("settings.modals.sysproxy.actions.editPac")}
+                initialData={() => Promise.resolve(value.pac_content ?? "")}
+                dataKey="sysproxy-pac"
                 language="javascript"
                 onSave={(_prev, curr) => {
                   let pac = DEFAULT_PAC;

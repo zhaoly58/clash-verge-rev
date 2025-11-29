@@ -1,19 +1,20 @@
 import {
   DndContext,
-  closestCenter,
+  DragEndEvent,
   KeyboardSensor,
   PointerSensor,
+  closestCenter,
   useSensor,
   useSensors,
-  DragEndEvent,
 } from "@dnd-kit/core";
 import {
   SortableContext,
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
+import MonacoEditor from "@monaco-editor/react";
 import {
-  VerticalAlignTopRounded,
   VerticalAlignBottomRounded,
+  VerticalAlignTopRounded,
 } from "@mui/icons-material";
 import {
   Autocomplete,
@@ -39,7 +40,6 @@ import {
   useState,
 } from "react";
 import { useTranslation } from "react-i18next";
-import MonacoEditor from "react-monaco-editor";
 import { Virtuoso } from "react-virtuoso";
 
 import { Switch } from "@/components/base";
@@ -47,6 +47,7 @@ import { RuleItem } from "@/components/profile/rule-item";
 import { readProfileFile, saveProfileFile } from "@/services/cmds";
 import { showNotice } from "@/services/noticeService";
 import { useThemeMode } from "@/services/states";
+import type { TranslationKey } from "@/types/generated/i18n-keys";
 import getSystem from "@/utils/get-system";
 
 import { BaseSearchBox } from "../base/base-search-box";
@@ -240,7 +241,24 @@ const rules: {
   },
 ];
 
+const RULE_TYPE_LABEL_KEYS: Record<string, string> = Object.fromEntries(
+  rules.map((rule) => [
+    rule.name,
+    `rules.modals.editor.ruleTypes.${rule.name}`,
+  ]),
+);
+
 const builtinProxyPolicies = ["DIRECT", "REJECT", "REJECT-DROP", "PASS"];
+
+const PROXY_POLICY_LABEL_KEYS: Record<string, TranslationKey> =
+  builtinProxyPolicies.reduce(
+    (acc, policy) => {
+      acc[policy] =
+        `proxies.components.enums.policies.${policy}` as TranslationKey;
+      return acc;
+    },
+    {} as Record<string, TranslationKey>,
+  );
 
 export const RulesEditorViewer = (props: Props) => {
   const { groupsUid, mergeUid, profileUid, property, open, onClose, onSave } =
@@ -350,8 +368,8 @@ export const RulesEditorViewer = (props: Props) => {
             { forceQuotes: true },
           ),
         );
-      } catch (e: any) {
-        showNotice("error", e?.message || e?.toString() || "YAML dump error");
+      } catch (error) {
+        showNotice.error(error ?? "YAML dump error");
       }
     };
     let idleId: number | undefined;
@@ -462,10 +480,12 @@ export const RulesEditorViewer = (props: Props) => {
 
   const validateRule = () => {
     if ((ruleType.required ?? true) && !ruleContent) {
-      throw new Error(t("Rule Condition Required"));
+      throw new Error(
+        t("rules.modals.editor.form.validation.conditionRequired"),
+      );
     }
     if (ruleType.validator && !ruleType.validator(ruleContent)) {
-      throw new Error(t("Invalid Rule"));
+      throw new Error(t("rules.modals.editor.form.validation.invalidRule"));
     }
 
     const condition = (ruleType.required ?? true) ? ruleContent : "";
@@ -477,11 +497,11 @@ export const RulesEditorViewer = (props: Props) => {
   const handleSave = useLockFn(async () => {
     try {
       await saveProfileFile(property, currData);
-      showNotice("success", t("Saved Successfully"));
+      showNotice.success("shared.feedback.notifications.saved");
       onSave?.(prevData, currData);
       onClose();
     } catch (err: any) {
-      showNotice("error", err.toString());
+      showNotice.error(err);
     }
   });
 
@@ -490,7 +510,7 @@ export const RulesEditorViewer = (props: Props) => {
       <DialogTitle>
         {
           <Box display="flex" justifyContent="space-between">
-            {t("Edit Rules")}
+            {t("rules.modals.editor.title")}
             <Box>
               <Button
                 variant="contained"
@@ -499,7 +519,9 @@ export const RulesEditorViewer = (props: Props) => {
                   setVisualization((prev) => !prev);
                 }}
               >
-                {visualization ? t("Advanced") : t("Visualization")}
+                {visualization
+                  ? t("shared.editorModes.advanced")
+                  : t("shared.editorModes.visualization")}
               </Button>
             </Box>
           </Box>
@@ -518,26 +540,37 @@ export const RulesEditorViewer = (props: Props) => {
               }}
             >
               <Item>
-                <ListItemText primary={t("Rule Type")} />
+                <ListItemText
+                  primary={t("rules.modals.editor.form.labels.type")}
+                />
                 <Autocomplete
                   size="small"
                   sx={{ minWidth: "240px" }}
                   renderInput={(params) => <TextField {...params} />}
                   options={rules}
                   value={ruleType}
-                  getOptionLabel={(option) => option.name}
-                  renderOption={(props, option) => (
-                    <li {...props} title={t(option.name)}>
-                      {option.name}
-                    </li>
-                  )}
+                  getOptionLabel={(option) =>
+                    t(RULE_TYPE_LABEL_KEYS[option.name] ?? option.name)
+                  }
+                  renderOption={(props, option) => {
+                    const label = t(
+                      RULE_TYPE_LABEL_KEYS[option.name] ?? option.name,
+                    );
+                    return (
+                      <li {...props} title={label}>
+                        {label}
+                      </li>
+                    );
+                  }}
                   onChange={(_, value) => value && setRuleType(value)}
                 />
               </Item>
               <Item
                 sx={{ display: !(ruleType.required ?? true) ? "none" : "" }}
               >
-                <ListItemText primary={t("Rule Content")} />
+                <ListItemText
+                  primary={t("rules.modals.editor.form.labels.content")}
+                />
 
                 {ruleType.name === "RULE-SET" && (
                   <Autocomplete
@@ -574,24 +607,34 @@ export const RulesEditorViewer = (props: Props) => {
                   )}
               </Item>
               <Item>
-                <ListItemText primary={t("Proxy Policy")} />
+                <ListItemText
+                  primary={t("rules.modals.editor.form.labels.proxyPolicy")}
+                />
                 <Autocomplete
                   size="small"
                   sx={{ minWidth: "240px" }}
                   renderInput={(params) => <TextField {...params} />}
                   options={proxyPolicyList}
                   value={proxyPolicy}
-                  renderOption={(props, option) => (
-                    <li {...props} title={t(option)}>
-                      {option}
-                    </li>
-                  )}
+                  getOptionLabel={(option) =>
+                    t(PROXY_POLICY_LABEL_KEYS[option] ?? option)
+                  }
+                  renderOption={(props, option) => {
+                    const label = t(PROXY_POLICY_LABEL_KEYS[option] ?? option);
+                    return (
+                      <li {...props} title={label}>
+                        {label}
+                      </li>
+                    );
+                  }}
                   onChange={(_, value) => value && setProxyPolicy(value)}
                 />
               </Item>
               {ruleType.noResolve && (
                 <Item>
-                  <ListItemText primary={t("No Resolve")} />
+                  <ListItemText
+                    primary={t("rules.modals.editor.form.toggles.noResolve")}
+                  />
                   <Switch
                     checked={noResolve}
                     onChange={() => setNoResolve(!noResolve)}
@@ -609,11 +652,11 @@ export const RulesEditorViewer = (props: Props) => {
                       if (prependSeq.includes(raw)) return;
                       setPrependSeq([raw, ...prependSeq]);
                     } catch (err: any) {
-                      showNotice("error", err.message || err.toString());
+                      showNotice.error(err);
                     }
                   }}
                 >
-                  {t("Prepend Rule")}
+                  {t("rules.modals.editor.form.actions.prependRule")}
                 </Button>
               </Item>
               <Item>
@@ -627,11 +670,11 @@ export const RulesEditorViewer = (props: Props) => {
                       if (appendSeq.includes(raw)) return;
                       setAppendSeq([...appendSeq, raw]);
                     } catch (err: any) {
-                      showNotice("error", err.message || err.toString());
+                      showNotice.error(err);
                     }
                   }}
                 >
-                  {t("Append Rule")}
+                  {t("rules.modals.editor.form.actions.appendRule")}
                 </Button>
               </Item>
             </List>
@@ -748,7 +791,7 @@ export const RulesEditorViewer = (props: Props) => {
             height="100%"
             language="yaml"
             value={currData}
-            theme={themeMode === "light" ? "vs" : "vs-dark"}
+            theme={themeMode === "light" ? "light" : "vs-dark"}
             options={{
               tabSize: 2, // 根据语言类型设置缩进大小
               minimap: {
@@ -769,18 +812,18 @@ export const RulesEditorViewer = (props: Props) => {
               fontLigatures: false, // 连字符
               smoothScrolling: true, // 平滑滚动
             }}
-            onChange={(value) => setCurrData(value)}
+            onChange={(value) => setCurrData(value ?? "")}
           />
         )}
       </DialogContent>
 
       <DialogActions>
         <Button onClick={onClose} variant="outlined">
-          {t("Cancel")}
+          {t("shared.actions.cancel")}
         </Button>
 
         <Button onClick={handleSave} variant="contained">
-          {t("Save")}
+          {t("shared.actions.save")}
         </Button>
       </DialogActions>
     </Dialog>

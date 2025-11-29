@@ -2,12 +2,11 @@ use crate::{
     cmd,
     config::{Config, PrfItem, PrfOption, profiles::profiles_draft_update_item_safe},
     core::{CoreManager, handle, tray},
-    logging, logging_error,
-    utils::logging::Type,
 };
 use anyhow::{Result, bail};
+use clash_verge_logging::{Type, logging, logging_error};
 use smartstring::alias::String;
-use tauri::Emitter;
+use tauri::Emitter as _;
 
 /// Toggle proxy profile
 pub async fn toggle_proxy_profile(profile_index: String) {
@@ -60,7 +59,6 @@ pub async fn switch_proxy_node(group_name: &str, proxy_name: &str) {
                 group_name,
                 proxy_name
             );
-            let _ = handle::Handle::app_handle().emit("verge://force-refresh-proxies", ());
             let _ = tray::Tray::global().update_menu().await;
         }
         Err(err) => {
@@ -72,7 +70,6 @@ pub async fn switch_proxy_node(group_name: &str, proxy_name: &str) {
                 proxy_name,
                 err
             );
-            let _ = handle::Handle::app_handle().emit("verge://force-refresh-proxies", ());
         }
     }
 }
@@ -262,9 +259,6 @@ pub async fn update_profile(
 }
 
 /// 增强配置
-pub async fn enhance_profiles() -> Result<()> {
-    crate::core::CoreManager::global()
-        .update_config()
-        .await
-        .map(|_| ())
+pub async fn enhance_profiles() -> Result<(bool, String)> {
+    crate::core::CoreManager::global().update_config().await
 }

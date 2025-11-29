@@ -13,15 +13,15 @@ import {
   sortableKeyboardCoordinates,
 } from "@dnd-kit/sortable";
 import {
+  CheckBoxOutlineBlankRounded,
+  CheckBoxRounded,
   ClearRounded,
   ContentPasteRounded,
+  DeleteRounded,
+  IndeterminateCheckBoxRounded,
   LocalFireDepartmentRounded,
   RefreshRounded,
   TextSnippetOutlined,
-  CheckBoxOutlineBlankRounded,
-  CheckBoxRounded,
-  IndeterminateCheckBoxRounded,
-  DeleteRounded,
 } from "@mui/icons-material";
 import { LoadingButton } from "@mui/lab";
 import { Box, Button, Divider, Grid, IconButton, Stack } from "@mui/material";
@@ -60,14 +60,12 @@ import {
 } from "@/services/cmds";
 import { showNotice } from "@/services/noticeService";
 import { useSetLoadingCache, useThemeMode } from "@/services/states";
+import { debugLog } from "@/utils/debug";
 
 // 记录profile切换状态
 const debugProfileSwitch = (action: string, profile: string, extra?: any) => {
   const timestamp = new Date().toISOString().substring(11, 23);
-  console.log(
-    `[Profile-Debug][${timestamp}] ${action}: ${profile}`,
-    extra || "",
-  );
+  debugLog(`[Profile-Debug][${timestamp}] ${action}: ${profile}`, extra || "");
 };
 
 // 检查请求是否已过期
@@ -145,13 +143,13 @@ const ProfilePage = () => {
       }
 
       setActivatings((prev) => prev.filter((id) => id !== previousSwitching));
-      showNotice(
-        "info",
-        `${t("Profile switch interrupted by new selection")}: ${previousSwitching} → ${newProfile}`,
+      showNotice.info(
+        "profiles.page.feedback.notifications.switchInterrupted",
+        `${previousSwitching} → ${newProfile}`,
         3000,
       );
     },
-    [t],
+    [],
   );
 
   // 清理切换状态
@@ -191,7 +189,7 @@ const ProfilePage = () => {
 
           for (const file of paths) {
             if (!file.endsWith(".yaml") && !file.endsWith(".yml")) {
-              showNotice("error", t("Only YAML Files Supported"));
+              showNotice.error("profiles.page.feedback.errors.onlyYaml");
               continue;
             }
             const item = {
@@ -223,7 +221,7 @@ const ProfilePage = () => {
 
   // 添加紧急恢复功能
   const onEmergencyRefresh = useLockFn(async () => {
-    console.log("[紧急刷新] 开始强制刷新所有数据");
+    debugLog("[紧急刷新] 开始强制刷新所有数据");
 
     try {
       // 清除所有SWR缓存
@@ -239,10 +237,17 @@ const ProfilePage = () => {
       await new Promise((resolve) => setTimeout(resolve, 500));
       await onEnhance(false);
 
-      showNotice("success", "数据已强制刷新", 2000);
-    } catch (error: any) {
+      showNotice.success(
+        "profiles.page.feedback.notices.forceRefreshCompleted",
+        2000,
+      );
+    } catch (error) {
       console.error("[紧急刷新] 失败:", error);
-      showNotice("error", `紧急刷新失败: ${error.message}`, 4000);
+      showNotice.error(
+        "profiles.page.feedback.notices.emergencyRefreshFailed",
+        { message: String(error) },
+        4000,
+      );
     }
   });
 
@@ -271,13 +276,13 @@ const ProfilePage = () => {
     if (!url) return;
     // 校验url是否为http/https
     if (!/^https?:\/\//i.test(url)) {
-      showNotice("error", t("Invalid Profile URL"));
+      showNotice.error("profiles.page.feedback.errors.invalidUrl");
       return;
     }
     setLoading(true);
 
     const handleImportSuccess = async (noticeKey: string) => {
-      showNotice("success", t(noticeKey));
+      showNotice.success(noticeKey);
       setUrl("");
       await performRobustRefresh();
     };
@@ -285,24 +290,25 @@ const ProfilePage = () => {
     try {
       // 尝试正常导入
       await importProfile(url);
-      await handleImportSuccess("Profile Imported Successfully");
+      await handleImportSuccess("shared.feedback.notifications.importSuccess");
     } catch (initialErr) {
       console.warn("[订阅导入] 首次导入失败:", initialErr);
 
-      showNotice("info", t("Import failed, retrying with Clash proxy..."));
+      showNotice.info("profiles.page.feedback.notifications.importRetry");
       try {
         // 使用自身代理尝试导入
         await importProfile(url, {
           with_proxy: false,
           self_proxy: true,
         });
-        await handleImportSuccess("Profile Imported with Clash proxy");
-      } catch (retryErr: any) {
+        await handleImportSuccess(
+          "shared.feedback.notifications.importWithClashProxy",
+        );
+      } catch (retryErr) {
         // 回退导入也失败
-        const retryErrmsg = retryErr?.message || retryErr.toString();
-        showNotice(
-          "error",
-          `${t("Import failed even with Clash proxy")}: ${retryErrmsg}`,
+        showNotice.error(
+          "profiles.page.feedback.notifications.importFail",
+          String(retryErr),
         );
       }
     } finally {
@@ -319,7 +325,7 @@ const ProfilePage = () => {
 
     while (retryCount < maxRetries) {
       try {
-        console.log(`[导入刷新] 第${retryCount + 1}次尝试刷新配置数据`);
+        debugLog(`[导入刷新] 第${retryCount + 1}次尝试刷新配置数据`);
 
         // 强制刷新，绕过所有缓存
         await mutateProfiles(undefined, {
@@ -349,16 +355,14 @@ const ProfilePage = () => {
       // 清除SWR缓存并重新获取
       await mutate("getProfiles", getProfiles(), { revalidate: true });
       await onEnhance(false);
-      showNotice(
-        "error",
-        t("Profile imported but may need manual refresh"),
+      showNotice.error(
+        "profiles.page.feedback.notifications.importNeedsRefresh",
         3000,
       );
     } catch (finalError) {
       console.error(`[导入刷新] 最终刷新尝试失败:`, finalError);
-      showNotice(
-        "error",
-        t("Profile imported successfully, please restart if not visible"),
+      showNotice.error(
+        "profiles.page.feedback.notifications.importSuccess",
         5000,
       );
     }
@@ -387,7 +391,7 @@ const ProfilePage = () => {
           !abortController.signal.aborted
         ) {
           await activateSelected();
-          console.log(`[Profile] 后台处理完成，序列号: ${sequence}`);
+          debugLog(`[Profile] 后台处理完成，序列号: ${sequence}`);
         } else {
           debugProfileSwitch(
             "BACKGROUND_TASK_SKIPPED",
@@ -405,9 +409,7 @@ const ProfilePage = () => {
   const activateProfile = useCallback(
     async (profile: string, notifySuccess: boolean) => {
       if (profiles.current === profile && !notifySuccess) {
-        console.log(
-          `[Profile] 目标profile ${profile} 已经是当前配置，跳过切换`,
-        );
+        debugLog(`[Profile] 目标profile ${profile} 已经是当前配置，跳过切换`);
         return;
       }
 
@@ -439,7 +441,7 @@ const ProfilePage = () => {
       });
 
       try {
-        console.log(
+        debugLog(
           `[Profile] 开始切换到: ${profile}，序列号: ${currentSequence}`,
         );
 
@@ -477,10 +479,13 @@ const ProfilePage = () => {
         closeAllConnections();
 
         if (notifySuccess && success) {
-          showNotice("success", t("Profile Switched"), 1000);
+          showNotice.success(
+            "profiles.page.feedback.notifications.profileSwitched",
+            1000,
+          );
         }
 
-        console.log(
+        debugLog(
           `[Profile] 切换到 ${profile} 完成，序列号: ${currentSequence}，开始后台处理`,
         );
 
@@ -508,7 +513,7 @@ const ProfilePage = () => {
         }
 
         console.error(`[Profile] 切换失败:`, err);
-        showNotice("error", err?.message || err.toString(), 4000);
+        showNotice.error(err, 4000);
       } finally {
         // 只有当前profile仍然是正在切换的profile且序列号匹配时才清理状态
         if (
@@ -529,7 +534,6 @@ const ProfilePage = () => {
       profiles,
       patchProfiles,
       mutateLogs,
-      t,
       executeBackgroundTasks,
       handleProfileInterrupt,
       cleanupSwitchState,
@@ -561,7 +565,7 @@ const ProfilePage = () => {
 
   const onEnhance = useLockFn(async (notifySuccess: boolean) => {
     if (switchingProfileRef.current) {
-      console.log(
+      debugLog(
         `[Profile] 有profile正在切换中(${switchingProfileRef.current})，跳过enhance操作`,
       );
       return;
@@ -574,10 +578,13 @@ const ProfilePage = () => {
       await enhanceProfiles();
       mutateLogs();
       if (notifySuccess) {
-        showNotice("success", t("Profile Reactivated"), 1000);
+        showNotice.success(
+          "profiles.page.feedback.notifications.profileReactivated",
+          1000,
+        );
       }
     } catch (err: any) {
-      showNotice("error", err.message || err.toString(), 3000);
+      showNotice.error(err, 3000);
     } finally {
       // 保留正在切换的profile，清除其他状态
       setActivatings((prev) =>
@@ -597,7 +604,7 @@ const ProfilePage = () => {
         await onEnhance(false);
       }
     } catch (err: any) {
-      showNotice("error", err?.message || err.toString());
+      showNotice.error(err);
     } finally {
       setActivatings([]);
     }
@@ -713,17 +720,17 @@ const ProfilePage = () => {
       setSelectedProfiles(new Set());
       setBatchMode(false);
 
-      showNotice("success", t("Selected profiles deleted successfully"));
+      showNotice.success("profiles.page.feedback.notifications.batchDeleted");
     } catch (err: any) {
-      showNotice("error", err?.message || err.toString());
+      showNotice.error(err);
     } finally {
       setActivatings([]);
     }
   });
 
   const mode = useThemeMode();
-  const islight = mode === "light" ? true : false;
-  const dividercolor = islight
+  const isLight = mode === "light";
+  const dividercolor = isLight
     ? "rgba(0, 0, 0, 0.06)"
     : "rgba(255, 255, 255, 0.06)";
 
@@ -741,20 +748,20 @@ const ProfilePage = () => {
         const newProfileId = event.payload;
         const now = Date.now();
 
-        console.log(`[Profile] 收到配置变更事件: ${newProfileId}`);
+        debugLog(`[Profile] 收到配置变更事件: ${newProfileId}`);
 
         if (
           lastProfileId === newProfileId &&
           now - lastUpdateTime < debounceDelay
         ) {
-          console.log(`[Profile] 重复事件被防抖，跳过`);
+          debugLog(`[Profile] 重复事件被防抖，跳过`);
           return;
         }
 
         lastProfileId = newProfileId;
         lastUpdateTime = now;
 
-        console.log(`[Profile] 执行配置数据刷新`);
+        debugLog(`[Profile] 执行配置数据刷新`);
 
         if (refreshTimer !== null) {
           window.clearTimeout(refreshTimer);
@@ -793,7 +800,7 @@ const ProfilePage = () => {
   return (
     <BasePage
       full
-      title={t("Profiles")}
+      title={t("profiles.page.title")}
       contentStyle={{ height: "100%" }}
       header={
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -803,7 +810,7 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="inherit"
-                title={t("Batch Operations")}
+                title={t("profiles.page.batch.title")}
                 onClick={toggleBatchMode}
               >
                 <CheckBoxOutlineBlankRounded />
@@ -812,7 +819,7 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="inherit"
-                title={t("Update All Profiles")}
+                title={t("profiles.page.actions.updateAll")}
                 onClick={onUpdateAll}
               >
                 <RefreshRounded />
@@ -821,7 +828,7 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="inherit"
-                title={t("View Runtime Config")}
+                title={t("profiles.page.actions.viewRuntimeConfig")}
                 onClick={() => configRef.current?.open()}
               >
                 <TextSnippetOutlined />
@@ -830,7 +837,7 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="primary"
-                title={t("Reactivate Profiles")}
+                title={t("profiles.page.actions.reactivate")}
                 onClick={() => onEnhance(true)}
               >
                 <LocalFireDepartmentRounded />
@@ -862,7 +869,11 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="inherit"
-                title={isAllSelected() ? t("Deselect All") : t("Select All")}
+                title={
+                  isAllSelected()
+                    ? t("profiles.page.batch.actions.deselectAll")
+                    : t("profiles.page.batch.actions.selectAll")
+                }
                 onClick={
                   isAllSelected() ? clearAllSelections : selectAllProfiles
                 }
@@ -878,19 +889,20 @@ const ProfilePage = () => {
               <IconButton
                 size="small"
                 color="error"
-                title={t("Delete Selected Profiles")}
+                title={t("profiles.page.batch.actions.delete")}
                 onClick={deleteSelectedProfiles}
                 disabled={selectedProfiles.size === 0}
               >
                 <DeleteRounded />
               </IconButton>
               <Button size="small" variant="outlined" onClick={toggleBatchMode}>
-                {t("Done")}
+                {t("profiles.page.batch.actions.done")}
               </Button>
               <Box
                 sx={{ flex: 1, textAlign: "right", color: "text.secondary" }}
               >
-                {t("Selected")} {selectedProfiles.size} {t("items")}
+                {t("profiles.page.batch.summary.selected")}{" "}
+                {selectedProfiles.size} {t("profiles.page.batch.summary.items")}
               </Box>
             </Box>
           )}
@@ -923,7 +935,7 @@ const ProfilePage = () => {
             event.preventDefault();
             void onImport();
           }}
-          placeholder={t("Profile URL")}
+          placeholder={t("profiles.page.importForm.placeholder")}
           slotProps={{
             input: {
               sx: { pr: 1 },
@@ -931,7 +943,7 @@ const ProfilePage = () => {
                 <IconButton
                   size="small"
                   sx={{ p: 0.5 }}
-                  title={t("Paste")}
+                  title={t("profiles.page.importForm.actions.paste")}
                   onClick={onCopyLink}
                 >
                   <ContentPasteRounded fontSize="inherit" />
@@ -940,7 +952,7 @@ const ProfilePage = () => {
                 <IconButton
                   size="small"
                   sx={{ p: 0.5 }}
-                  title={t("Clear")}
+                  title={t("shared.actions.clear")}
                   onClick={() => setUrl("")}
                 >
                   <ClearRounded fontSize="inherit" />
@@ -957,7 +969,7 @@ const ProfilePage = () => {
           sx={{ borderRadius: "6px" }}
           onClick={onImport}
         >
-          {t("Import")}
+          {t("profiles.page.actions.import")}
         </LoadingButton>
         <Button
           variant="contained"
@@ -965,7 +977,7 @@ const ProfilePage = () => {
           sx={{ borderRadius: "6px" }}
           onClick={() => viewerRef.current?.create()}
         >
-          {t("New")}
+          {t("shared.actions.new")}
         </Button>
       </Stack>
 
@@ -1002,7 +1014,7 @@ const ProfilePage = () => {
                         if (prev !== curr && profiles.current === item.uid) {
                           await onEnhance(false);
                           //  await restartCore();
-                          //   Notice.success(t("Clash Core Restarted"), 1000);
+                          //   Notice.success(t("settings.feedback.notifications.clash.restartSuccess"), 1000);
                         }
                       }}
                       onDelete={() => {

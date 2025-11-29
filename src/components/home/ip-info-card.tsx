@@ -1,11 +1,11 @@
 import {
   LocationOnOutlined,
   RefreshOutlined,
-  VisibilityOutlined,
   VisibilityOffOutlined,
+  VisibilityOutlined,
 } from "@mui/icons-material";
-import { Box, Typography, Button, Skeleton, IconButton } from "@mui/material";
-import { useState, useEffect, useCallback, memo } from "react";
+import { Box, Button, IconButton, Skeleton, Typography } from "@mui/material";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
 import { getIpInfo } from "@/services/api";
@@ -14,6 +14,7 @@ import { EnhancedCard } from "./enhanced-card";
 
 // 定义刷新时间（秒）
 const IP_REFRESH_SECONDS = 300;
+const IP_INFO_CACHE_KEY = "cv_ip_info_cache";
 
 // 提取InfoItem子组件并使用memo优化
 const InfoItem = memo(({ label, value }: { label: string; value: string }) => (
@@ -59,43 +60,100 @@ export const IpInfoCard = () => {
   const [error, setError] = useState("");
   const [showIp, setShowIp] = useState(false);
   const [countdown, setCountdown] = useState(IP_REFRESH_SECONDS);
+  const lastFetchRef = useRef<number | null>(null);
 
-  // 获取IP信息
-  const fetchIpInfo = useCallback(async () => {
-    try {
-      setLoading(true);
+  const fetchIpInfo = useCallback(
+    async (force = false) => {
       setError("");
-      const data = await getIpInfo();
-      setIpInfo(data);
-      setCountdown(IP_REFRESH_SECONDS);
-    } catch (err: any) {
-      setError(err.message || t("Failed to get IP info"));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
 
-  // 组件加载时获取IP信息
+      try {
+        if (!force && typeof window !== "undefined" && window.sessionStorage) {
+          const raw = window.sessionStorage.getItem(IP_INFO_CACHE_KEY);
+          if (raw) {
+            const parsed = JSON.parse(raw);
+            const now = Date.now();
+            if (
+              parsed?.ts &&
+              parsed?.data &&
+              now - parsed.ts < IP_REFRESH_SECONDS * 1000
+            ) {
+              setIpInfo(parsed.data);
+              lastFetchRef.current = parsed.ts;
+              const elapsed = Math.floor((now - parsed.ts) / 1000);
+              setCountdown(Math.max(IP_REFRESH_SECONDS - elapsed, 0));
+              setLoading(false);
+              return;
+            }
+          }
+        }
+      } catch (e) {
+        console.warn("Failed to read IP info from sessionStorage:", e);
+      }
+
+      try {
+        setLoading(true);
+        const data = await getIpInfo();
+        setIpInfo(data);
+        const ts = Date.now();
+        lastFetchRef.current = ts;
+        try {
+          if (typeof window !== "undefined" && window.sessionStorage) {
+            window.sessionStorage.setItem(
+              IP_INFO_CACHE_KEY,
+              JSON.stringify({ data, ts }),
+            );
+          }
+        } catch (e) {
+          console.warn("Failed to write IP info to sessionStorage:", e);
+        }
+        setCountdown(IP_REFRESH_SECONDS);
+      } catch (err) {
+        setError(
+          err instanceof Error
+            ? err.message
+            : t("home.components.ipInfo.errors.load"),
+        );
+      } finally {
+        setLoading(false);
+      }
+    },
+    [t],
+  );
+
+  // 组件加载时获取IP信息并启动基于上次请求时间的倒计时
   useEffect(() => {
     fetchIpInfo();
 
-    // 倒计时实现优化，减少不必要的重渲染
     let timer: number | null = null;
-    let currentCount = IP_REFRESH_SECONDS;
 
-    // 只在必要时更新状态，减少重渲染次数
     const startCountdown = () => {
       timer = window.setInterval(() => {
-        currentCount -= 1;
+        const now = Date.now();
+        let ts = lastFetchRef.current;
+        try {
+          if (!ts && typeof window !== "undefined" && window.sessionStorage) {
+            const raw = window.sessionStorage.getItem(IP_INFO_CACHE_KEY);
+            if (raw) {
+              const parsed = JSON.parse(raw);
+              ts = parsed?.ts || null;
+            }
+          }
+        } catch (e) {
+          console.warn("Failed to read IP info from sessionStorage:", e);
+          ts = ts || null;
+        }
 
-        if (currentCount <= 0) {
+        const elapsed = ts ? Math.floor((now - ts) / 1000) : 0;
+        let remaining = IP_REFRESH_SECONDS - elapsed;
+
+        if (remaining <= 0) {
           fetchIpInfo();
-          currentCount = IP_REFRESH_SECONDS;
+          remaining = IP_REFRESH_SECONDS;
         }
 
         // 每5秒或倒计时结束时才更新UI
-        if (currentCount % 5 === 0 || currentCount <= 0) {
-          setCountdown(currentCount);
+        if (remaining % 5 === 0 || remaining <= 0) {
+          setCountdown(remaining);
         }
       }, 1000);
     };
@@ -114,11 +172,15 @@ export const IpInfoCard = () => {
   if (loading) {
     return (
       <EnhancedCard
-        title={t("IP Information")}
+        title={t("home.components.ipInfo.title")}
         icon={<LocationOnOutlined />}
         iconColor="info"
         action={
-          <IconButton size="small" onClick={fetchIpInfo} disabled={true}>
+          <IconButton
+            size="small"
+            onClick={() => fetchIpInfo(true)}
+            disabled={true}
+          >
             <RefreshOutlined />
           </IconButton>
         }
@@ -137,11 +199,11 @@ export const IpInfoCard = () => {
   if (error) {
     return (
       <EnhancedCard
-        title={t("IP Information")}
+        title={t("home.components.ipInfo.title")}
         icon={<LocationOnOutlined />}
         iconColor="info"
         action={
-          <IconButton size="small" onClick={fetchIpInfo}>
+          <IconButton size="small" onClick={() => fetchIpInfo(true)}>
             <RefreshOutlined />
           </IconButton>
         }
@@ -159,8 +221,8 @@ export const IpInfoCard = () => {
           <Typography variant="body1" color="error">
             {error}
           </Typography>
-          <Button onClick={fetchIpInfo} sx={{ mt: 2 }}>
-            {t("Retry")}
+          <Button onClick={() => fetchIpInfo(true)} sx={{ mt: 2 }}>
+            {t("shared.actions.retry")}
           </Button>
         </Box>
       </EnhancedCard>
@@ -170,11 +232,11 @@ export const IpInfoCard = () => {
   // 渲染正常数据
   return (
     <EnhancedCard
-      title={t("IP Information")}
+      title={t("home.components.ipInfo.title")}
       icon={<LocationOnOutlined />}
       iconColor="info"
       action={
-        <IconButton size="small" onClick={fetchIpInfo}>
+        <IconButton size="small" onClick={() => fetchIpInfo(true)}>
           <RefreshOutlined />
         </IconButton>
       }
@@ -222,7 +284,7 @@ export const IpInfoCard = () => {
                   maxWidth: "100%",
                 }}
               >
-                {ipInfo?.country || t("Unknown")}
+                {ipInfo?.country || t("home.components.ipInfo.labels.unknown")}
               </Typography>
             </Box>
 
@@ -232,7 +294,7 @@ export const IpInfoCard = () => {
                 color="text.secondary"
                 sx={{ flexShrink: 0 }}
               >
-                {t("IP")}:
+                {t("home.components.ipInfo.labels.ip")}:
               </Typography>
               <Box
                 sx={{
@@ -266,20 +328,29 @@ export const IpInfoCard = () => {
             </Box>
 
             <InfoItem
-              label={t("ASN")}
+              label={t("home.components.ipInfo.labels.asn")}
               value={ipInfo?.asn ? `AS${ipInfo.asn}` : "N/A"}
             />
           </Box>
 
           {/* 右侧：组织、ISP和位置信息 */}
           <Box sx={{ width: "60%", overflow: "auto" }}>
-            <InfoItem label={t("ISP")} value={ipInfo?.isp} />
-            <InfoItem label={t("ORG")} value={ipInfo?.asn_organization} />
             <InfoItem
-              label={t("Location")}
+              label={t("home.components.ipInfo.labels.isp")}
+              value={ipInfo?.isp}
+            />
+            <InfoItem
+              label={t("home.components.ipInfo.labels.org")}
+              value={ipInfo?.asn_organization}
+            />
+            <InfoItem
+              label={t("home.components.ipInfo.labels.location")}
               value={[ipInfo?.city, ipInfo?.region].filter(Boolean).join(", ")}
             />
-            <InfoItem label={t("Timezone")} value={ipInfo?.timezone} />
+            <InfoItem
+              label={t("home.components.ipInfo.labels.timezone")}
+              value={ipInfo?.timezone}
+            />
           </Box>
         </Box>
 
@@ -297,7 +368,7 @@ export const IpInfoCard = () => {
           }}
         >
           <Typography variant="caption">
-            {t("Auto refresh")}: {countdown}s
+            {t("home.components.ipInfo.labels.autoRefresh")}: {countdown}s
           </Typography>
           <Typography
             variant="caption"

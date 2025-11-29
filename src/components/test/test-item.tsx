@@ -13,6 +13,7 @@ import { useListen } from "@/hooks/use-listen";
 import { cmdTestDelay, downloadIconCache } from "@/services/cmds";
 import delayManager from "@/services/delay";
 import { showNotice } from "@/services/noticeService";
+import { debugLog } from "@/utils/debug";
 
 import { TestBox } from "./test-box";
 
@@ -82,7 +83,7 @@ export const TestItem = ({
     try {
       removeTest(uid);
     } catch (err: any) {
-      showNotice("error", err.message || err.toString());
+      showNotice.error(err);
     }
   });
 
@@ -107,7 +108,7 @@ export const TestItem = ({
 
     return () => {
       if (unlistenFn) {
-        console.log(
+        debugLog(
           `TestItem for ${id} unmounting or url changed, cleaning up test-all listener.`,
         );
         unlistenFn();
@@ -192,7 +193,7 @@ export const TestItem = ({
                 ":hover": { bgcolor: alpha(palette.primary.main, 0.15) },
               })}
             >
-              {t("Test")}
+              {t("tests.components.item.actions.test")}
             </Widget>
           )}
 

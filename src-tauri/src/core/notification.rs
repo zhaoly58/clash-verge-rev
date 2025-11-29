@@ -1,20 +1,19 @@
-use crate::{
-    constants::{retry, timing},
-    logging,
-    utils::logging::Type,
-};
+use super::handle::Handle;
+use crate::constants::{retry, timing};
+use clash_verge_logging::{Type, logging};
 use parking_lot::RwLock;
 use smartstring::alias::String;
 use std::{
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread,
-    time::Instant,
+    time::{Duration, Instant},
 };
-use tauri::{Emitter, WebviewWindow};
+use tauri::{Emitter as _, WebviewWindow};
 
+// TODO 重构或优化，避免 Clone 过多
 #[derive(Debug, Clone)]
 pub enum FrontendEvent {
     RefreshClash,
@@ -46,7 +45,7 @@ pub struct NotificationSystem {
     worker_handle: Option<thread::JoinHandle<()>>,
     pub(super) is_running: bool,
     stats: EventStats,
-    emergency_mode: RwLock<bool>,
+    emergency_mode: AtomicBool,
 }
 
 impl Default for NotificationSystem {
@@ -62,7 +61,7 @@ impl NotificationSystem {
             worker_handle: None,
             is_running: false,
             stats: EventStats::default(),
-            emergency_mode: RwLock::new(false),
+            emergency_mode: AtomicBool::new(false),
         }
     }
 
@@ -91,30 +90,24 @@ impl NotificationSystem {
     }
 
     fn worker_loop(rx: mpsc::Receiver<FrontendEvent>) {
-        use super::handle::Handle;
-
-        let handle = Handle::global();
-
-        while !handle.is_exiting() {
-            match rx.recv() {
+        loop {
+            let handle = Handle::global();
+            if handle.is_exiting() {
+                break;
+            }
+            match rx.recv_timeout(Duration::from_millis(1_000)) {
                 Ok(event) => Self::process_event(handle, event),
-                Err(e) => {
-                    logging!(
-                        error,
-                        Type::System,
-                        "receive event error, stop notification worker: {}",
-                        e
-                    );
-                    break;
-                }
+                Err(mpsc::RecvTimeoutError::Timeout) => (),
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
             }
         }
     }
 
     fn process_event(handle: &super::handle::Handle, event: FrontendEvent) {
-        let system_guard = handle.notification_system.read();
-        let Some(system) = system_guard.as_ref() else {
-            return;
+        let binding = handle.notification_system.read();
+        let system = match binding.as_ref() {
+            Some(s) => s,
+            None => return,
         };
 
         if system.should_skip_event(&event) {
@@ -123,12 +116,13 @@ impl NotificationSystem {
 
         if let Some(window) = super::handle::Handle::get_window() {
             system.emit_to_window(&window, event);
+            drop(binding);
             thread::sleep(timing::EVENT_EMIT_DELAY);
         }
     }
 
     fn should_skip_event(&self, event: &FrontendEvent) -> bool {
-        let is_emergency = *self.emergency_mode.read();
+        let is_emergency = self.emergency_mode.load(Ordering::Acquire);
         matches!(
             (is_emergency, event),
             (true, FrontendEvent::NoticeMessage { status, .. }) if status == "info"
@@ -187,14 +181,14 @@ impl NotificationSystem {
         *self.stats.last_error_time.write() = Some(Instant::now());
 
         let errors = self.stats.total_errors.load(Ordering::Relaxed);
-        if errors > retry::EVENT_EMIT_THRESHOLD && !*self.emergency_mode.read() {
+        if errors > retry::EVENT_EMIT_THRESHOLD && !self.emergency_mode.load(Ordering::Acquire) {
             logging!(
                 warn,
                 Type::Frontend,
                 "Entering emergency mode after {} errors",
                 errors
             );
-            *self.emergency_mode.write() = true;
+            self.emergency_mode.store(true, Ordering::Release);
         }
     }
 

@@ -1,12 +1,13 @@
 use super::CmdResult;
+use crate::feat;
 use crate::utils::dirs;
 use crate::{
-    cmd::StringifyErr,
+    cmd::StringifyErr as _,
     config::{ClashInfo, Config},
     constants,
     core::{CoreManager, handle, validate::CoreConfigValidator},
 };
-use crate::{feat, logging, utils::logging::Type};
+use clash_verge_logging::{Type, logging};
 use compact_str::CompactString;
 use serde_yaml_ng::Mapping;
 use smartstring::alias::String;
@@ -22,7 +23,7 @@ pub async fn copy_clash_env() -> CmdResult {
 /// 获取Clash信息
 #[tauri::command]
 pub async fn get_clash_info() -> CmdResult<ClashInfo> {
-    Ok(Config::clash().await.latest_arc().get_client_info())
+    Ok(Config::clash().await.data_arc().get_client_info())
 }
 
 /// 修改Clash配置
@@ -189,7 +190,6 @@ pub async fn apply_dns_config(apply: bool) -> CmdResult {
             })?;
 
         logging!(info, Type::Config, "DNS config successfully applied");
-        handle::Handle::refresh_clash();
     } else {
         // 当关闭DNS设置时，重新生成配置（不加载DNS配置文件）
         logging!(
@@ -212,9 +212,9 @@ pub async fn apply_dns_config(apply: bool) -> CmdResult {
             })?;
 
         logging!(info, Type::Config, "Config regenerated successfully");
-        handle::Handle::refresh_clash();
     }
 
+    handle::Handle::refresh_clash();
     Ok(())
 }
 

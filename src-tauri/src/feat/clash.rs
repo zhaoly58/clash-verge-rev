@@ -1,10 +1,11 @@
 use crate::{
     config::Config,
     core::{CoreManager, handle, tray},
-    logging, logging_error,
+    feat::clean_async,
     process::AsyncHandler,
-    utils::{self, logging::Type, resolve},
+    utils::{self, resolve::reset_resolve_done},
 };
+use clash_verge_logging::{Type, logging, logging_error};
 use serde_yaml_ng::{Mapping, Value};
 use smartstring::alias::String;
 
@@ -24,16 +25,24 @@ pub async fn restart_clash_core() {
 
 /// Restart the application
 pub async fn restart_app() {
-    utils::server::shutdown_embedded_server();
-    if let Err(err) = resolve::resolve_reset_async().await {
-        handle::Handle::notice_message(
-            "restart_app::error",
-            format!("Failed to cleanup resources: {err}"),
-        );
-        logging!(error, Type::Core, "Restart failed during cleanup: {err}");
-        return;
-    }
+    logging!(debug, Type::System, "启动重启应用流程");
+    // 设置退出标志
+    handle::Handle::global().set_is_exiting();
 
+    utils::server::shutdown_embedded_server();
+    Config::apply_all_and_save_file().await;
+
+    logging!(info, Type::System, "开始异步清理资源");
+    let cleanup_result = clean_async().await;
+
+    logging!(
+        info,
+        Type::System,
+        "资源清理完成，退出代码: {}",
+        if cleanup_result { 0 } else { 1 }
+    );
+
+    reset_resolve_done();
     let app_handle = handle::Handle::app_handle();
     app_handle.restart();
 }
@@ -47,6 +56,7 @@ fn after_change_clash_mode() {
                     for connection in connections_array {
                         let _ = mihomo.close_connection(&connection.id).await;
                     }
+                    drop(mihomo);
                 }
             }
             Err(err) => {
@@ -81,7 +91,12 @@ pub async fn change_clash_mode(mode: String) {
             if clash_data.save_config().await.is_ok() {
                 handle::Handle::refresh_clash();
                 logging_error!(Type::Tray, tray::Tray::global().update_menu().await);
-                logging_error!(Type::Tray, tray::Tray::global().update_icon().await);
+                logging_error!(
+                    Type::Tray,
+                    tray::Tray::global()
+                        .update_icon(&Config::verge().await.data_arc())
+                        .await
+                );
             }
 
             let is_auto_close_connection = Config::verge()

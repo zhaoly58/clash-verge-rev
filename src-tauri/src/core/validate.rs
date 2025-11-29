@@ -2,21 +2,21 @@ use anyhow::Result;
 use scopeguard::defer;
 use smartstring::alias::String;
 use std::sync::atomic::{AtomicBool, Ordering};
-use tauri_plugin_shell::ShellExt;
+use tauri_plugin_shell::ShellExt as _;
 use tokio::fs;
 
 use crate::config::{Config, ConfigType};
 use crate::core::handle;
-use crate::singleton_lazy;
+use crate::singleton;
 use crate::utils::dirs;
-use crate::{logging, utils::logging::Type};
+use clash_verge_logging::{Type, logging};
 
 pub struct CoreConfigValidator {
     is_processing: AtomicBool,
 }
 
 impl CoreConfigValidator {
-    pub fn new() -> Self {
+    pub const fn new() -> Self {
         Self {
             is_processing: AtomicBool::new(false),
         }
@@ -361,8 +361,4 @@ fn contains_any_keyword<'a>(buf: &'a [u8], keywords: &'a [&str]) -> bool {
     false
 }
 
-singleton_lazy!(
-    CoreConfigValidator,
-    CORECONFIGVALIDATOR,
-    CoreConfigValidator::new
-);
+singleton!(CoreConfigValidator, CORECONFIGVALIDATOR);

@@ -22,7 +22,7 @@ import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import { updateProxyProvider } from "tauri-plugin-mihomo-api";
 
-import { useAppData } from "@/providers/app-data-context";
+import { useProxiesData, useProxyProvidersData } from "@/hooks/app-data";
 import { showNotice } from "@/services/noticeService";
 import parseTraffic from "@/utils/parse-traffic";
 
@@ -48,7 +48,8 @@ const parseExpire = (expire?: number) => {
 export const ProviderButton = () => {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
-  const { proxyProviders, refreshProxy, refreshProxyProviders } = useAppData();
+  const { proxyProviders, refreshProxyProviders } = useProxyProvidersData();
+  const { refreshProxy } = useProxiesData();
   const [updating, setUpdating] = useState<Record<string, boolean>>({});
 
   // 检查是否有提供者
@@ -66,12 +67,17 @@ export const ProviderButton = () => {
       await refreshProxy();
       await refreshProxyProviders();
 
-      showNotice("success", `${name} 更新成功`);
-    } catch (err: any) {
-      showNotice(
-        "error",
-        `${name} 更新失败: ${err?.message || err.toString()}`,
+      showNotice.success(
+        "proxies.feedback.notifications.provider.updateSuccess",
+        {
+          name,
+        },
       );
+    } catch (err) {
+      showNotice.error("proxies.feedback.notifications.provider.updateFailed", {
+        name,
+        message: String(err),
+      });
     } finally {
       // 清除更新状态
       setUpdating((prev) => ({ ...prev, [name]: false }));
@@ -84,7 +90,7 @@ export const ProviderButton = () => {
       // 获取所有provider的名称
       const allProviders = Object.keys(proxyProviders || {});
       if (allProviders.length === 0) {
-        showNotice("info", "没有可更新的代理提供者");
+        showNotice.info("proxies.feedback.notifications.provider.none");
         return;
       }
 
@@ -114,9 +120,11 @@ export const ProviderButton = () => {
       await refreshProxy();
       await refreshProxyProviders();
 
-      showNotice("success", "全部代理提供者更新成功");
-    } catch (err: any) {
-      showNotice("error", `更新失败: ${err?.message || err.toString()}`);
+      showNotice.success("proxies.feedback.notifications.provider.allUpdated");
+    } catch (err) {
+      showNotice.error("proxies.feedback.notifications.provider.genericError", {
+        message: String(err),
+      });
     } finally {
       // 清除所有更新状态
       setUpdating({});
@@ -138,7 +146,7 @@ export const ProviderButton = () => {
         onClick={() => setOpen(true)}
         sx={{ mr: 1 }}
       >
-        {t("Proxy Provider")}
+        {t("proxies.page.provider.title")}
       </Button>
 
       <Dialog open={open} onClose={handleClose} maxWidth="sm" fullWidth>
@@ -148,14 +156,17 @@ export const ProviderButton = () => {
             justifyContent="space-between"
             alignItems="center"
           >
-            <Typography variant="h6">{t("Proxy Provider")}</Typography>
+            <Typography variant="h6">
+              {t("proxies.page.provider.title")}
+            </Typography>
             <Box>
               <Button
                 variant="contained"
                 size="small"
                 onClick={updateAllProviders}
+                aria-label={t("proxies.page.provider.actions.updateAll")}
               >
-                {t("Update All")}
+                {t("proxies.page.provider.actions.updateAll")}
               </Button>
             </Box>
           </Box>
@@ -165,8 +176,8 @@ export const ProviderButton = () => {
           <List sx={{ py: 0, minHeight: 250 }}>
             {Object.entries(proxyProviders || {})
               .sort()
-              .map(([key, item]) => {
-                const provider = item;
+              .map(([key, provider]) => {
+                if (!provider) return null;
                 const time = dayjs(provider.updatedAt);
                 const isUpdating = updating[key];
 
@@ -246,7 +257,7 @@ export const ProviderButton = () => {
                             color="text.secondary"
                             noWrap
                           >
-                            <small>{t("Update At")}: </small>
+                            <small>{t("shared.labels.updateAt")}: </small>
                             {time.fromNow()}
                           </Typography>
                         </Box>
@@ -264,11 +275,17 @@ export const ProviderButton = () => {
                                   justifyContent: "space-between",
                                 }}
                               >
-                                <span title={t("Used / Total") as string}>
+                                <span
+                                  title={t("shared.labels.usedTotal") as string}
+                                >
                                   {parseTraffic(upload + download)} /{" "}
                                   {parseTraffic(total)}
                                 </span>
-                                <span title={t("Expire Time") as string}>
+                                <span
+                                  title={
+                                    t("shared.labels.expireTime") as string
+                                  }
+                                >
                                   {parseExpire(expire)}
                                 </span>
                               </Box>
@@ -313,7 +330,8 @@ export const ProviderButton = () => {
                             "100%": { transform: "rotate(360deg)" },
                           },
                         }}
-                        title={t("Update Provider") as string}
+                        title={t("proxies.page.provider.actions.update")}
+                        aria-label={t("proxies.page.provider.actions.update")}
                       >
                         <RefreshRounded />
                       </IconButton>
@@ -326,7 +344,7 @@ export const ProviderButton = () => {
 
         <DialogActions>
           <Button onClick={handleClose} variant="outlined">
-            {t("Close")}
+            {t("shared.actions.close")}
           </Button>
         </DialogActions>
       </Dialog>

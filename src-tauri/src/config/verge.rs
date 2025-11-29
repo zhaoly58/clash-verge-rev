@@ -1,10 +1,10 @@
 use crate::config::Config;
 use crate::{
     config::{DEFAULT_PAC, deserialize_encrypted, serialize_encrypted},
-    logging,
-    utils::{dirs, help, i18n, logging::Type},
+    utils::{dirs, help, i18n},
 };
 use anyhow::Result;
+use clash_verge_logging::{Type, logging};
 use log::LevelFilter;
 use serde::{Deserialize, Serialize};
 use smartstring::alias::String;
@@ -158,6 +158,15 @@ pub struct IVerge {
     /// 0: 不清理; 1: 1天；2: 7天; 3: 30天; 4: 90天
     pub auto_log_clean: Option<i32>,
 
+    /// Enable scheduled automatic backups
+    pub enable_auto_backup_schedule: Option<bool>,
+
+    /// Automatic backup interval in hours
+    pub auto_backup_interval_hours: Option<u64>,
+
+    /// Create backups automatically when critical configs change
+    pub auto_backup_on_change: Option<bool>,
+
     /// verge 的各种 port 用于覆盖 clash 的各种 port
     #[cfg(not(target_os = "windows"))]
     pub verge_redir_port: Option<u16>,
@@ -262,7 +271,7 @@ impl IVerge {
     /// 验证并修正配置文件中的clash_core值
     pub async fn validate_and_fix_config() -> Result<()> {
         let config_path = dirs::verge_path()?;
-        let mut config = match help::read_yaml::<IVerge>(&config_path).await {
+        let mut config = match help::read_yaml::<Self>(&config_path).await {
             Ok(config) => config,
             Err(_) => Self::template(),
         };
@@ -311,7 +320,7 @@ impl IVerge {
     }
 
     /// 配置修正后重新加载配置
-    async fn reload_config_after_fix(updated_config: IVerge) -> Result<()> {
+    async fn reload_config_after_fix(updated_config: Self) -> Result<()> {
         logging!(
             info,
             Type::Config,
@@ -351,7 +360,7 @@ impl IVerge {
 
     pub async fn new() -> Self {
         match dirs::verge_path() {
-            Ok(path) => match help::read_yaml::<IVerge>(&path).await {
+            Ok(path) => match help::read_yaml::<Self>(&path).await {
                 Ok(mut config) => {
                     // compatibility
                     if let Some(start_page) = config.start_page.clone()
@@ -422,12 +431,15 @@ impl IVerge {
             auto_check_update: Some(true),
             enable_builtin_enhanced: Some(true),
             auto_log_clean: Some(2), // 1: 1天, 2: 7天, 3: 30天, 4: 90天
+            enable_auto_backup_schedule: Some(false),
+            auto_backup_interval_hours: Some(24),
+            auto_backup_on_change: Some(true),
             webdav_url: None,
             webdav_username: None,
             webdav_password: None,
             enable_tray_speed: Some(false),
             // enable_tray_icon: Some(true),
-            tray_inline_proxy_groups: Some(false),
+            tray_inline_proxy_groups: Some(true),
             enable_global_hotkey: Some(true),
             enable_auto_light_weight_mode: Some(false),
             auto_light_weight_minutes: Some(10),
@@ -446,7 +458,7 @@ impl IVerge {
     /// patch verge config
     /// only save to file
     #[allow(clippy::cognitive_complexity)]
-    pub fn patch_config(&mut self, patch: &IVerge) {
+    pub fn patch_config(&mut self, patch: &Self) {
         macro_rules! patch {
             ($key: tt) => {
                 if patch.$key.is_some() {
@@ -517,6 +529,9 @@ impl IVerge {
         patch!(proxy_layout_column);
         patch!(test_list);
         patch!(auto_log_clean);
+        patch!(enable_auto_backup_schedule);
+        patch!(auto_backup_interval_hours);
+        patch!(auto_backup_on_change);
 
         patch!(webdav_url);
         patch!(webdav_username);
@@ -531,7 +546,7 @@ impl IVerge {
         patch!(enable_external_controller);
     }
 
-    pub fn get_singleton_port() -> u16 {
+    pub const fn get_singleton_port() -> u16 {
         crate::constants::network::ports::SINGLETON_SERVER
     }
 

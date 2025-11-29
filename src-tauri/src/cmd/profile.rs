@@ -1,6 +1,5 @@
 use super::CmdResult;
-use super::StringifyErr;
-use crate::utils::draft::SharedBox;
+use super::StringifyErr as _;
 use crate::{
     config::{
         Config, IProfiles, PrfItem, PrfOption,
@@ -11,11 +10,14 @@ use crate::{
         profiles_append_item_safe,
     },
     core::{CoreManager, handle, timer::Timer, tray::Tray},
-    feat, logging,
+    feat,
+    module::auto_backup::{AutoBackupManager, AutoBackupTrigger},
     process::AsyncHandler,
     ret_err,
-    utils::{dirs, help, logging::Type},
+    utils::{dirs, help},
 };
+use clash_verge_draft::SharedBox;
+use clash_verge_logging::{Type, logging};
 use scopeguard::defer;
 use smartstring::alias::String;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,14 +37,29 @@ pub async fn get_profiles() -> CmdResult<SharedBox<IProfiles>> {
 #[tauri::command]
 pub async fn enhance_profiles() -> CmdResult {
     match feat::enhance_profiles().await {
-        Ok(_) => {}
+        Ok((true, _)) => {
+            handle::Handle::refresh_clash();
+            Ok(())
+        }
+        Ok((false, msg)) => {
+            let message: String = if msg.is_empty() {
+                "Failed to reactivate profiles".into()
+            } else {
+                msg
+            };
+            logging!(
+                warn,
+                Type::Cmd,
+                "Reactivate profiles command failed validation: {}",
+                message.as_str()
+            );
+            Err(message)
+        }
         Err(e) => {
             logging!(error, Type::Cmd, "{}", e);
-            return Err(e.to_string().into());
+            Err(e.to_string().into())
         }
     }
-    handle::Handle::refresh_clash();
-    Ok(())
 }
 
 /// 导入配置文件
@@ -76,7 +93,7 @@ pub async fn import_profile(url: std::string::String, option: Option<PrfOption>)
             return Err(format!("导入订阅失败: {}", e).into());
         }
     }
-    // 立即发送配置变更通知
+
     if let Some(uid) = &item.uid {
         logging!(info, Type::Cmd, "[导入订阅] 发送配置变更通知: {}", uid);
         handle::Handle::notify_profile_changed(uid.clone());
@@ -87,10 +104,12 @@ pub async fn import_profile(url: std::string::String, option: Option<PrfOption>)
     if let Some(uid) = uid_clone {
         // 延迟发送，确保文件已完全写入
         tokio::time::sleep(Duration::from_millis(100)).await;
+        logging!(info, Type::Cmd, "[导入订阅] 发送配置变更通知: {}", uid);
         handle::Handle::notify_profile_changed(uid);
     }
 
     logging!(info, Type::Cmd, "[导入订阅] 导入完成: {}", url);
+    AutoBackupManager::trigger_backup(AutoBackupTrigger::ProfileChange);
     Ok(())
 }
 
@@ -118,11 +137,12 @@ pub async fn create_profile(item: PrfItem, file_data: Option<String>) -> CmdResu
     match profiles_append_item_with_filedata_safe(&item, file_data).await {
         Ok(_) => {
             // 发送配置变更通知
-            if let Some(uid) = &item.uid {
+            if let Some(uid) = item.uid.clone() {
                 logging!(info, Type::Cmd, "[创建订阅] 发送配置变更通知: {}", uid);
-                handle::Handle::notify_profile_changed(uid.clone());
+                handle::Handle::notify_profile_changed(uid);
             }
             Config::profiles().await.apply();
+            AutoBackupManager::trigger_backup(AutoBackupTrigger::ProfileChange);
             Ok(())
         }
         Err(err) => {
@@ -165,6 +185,7 @@ pub async fn delete_profile(index: String) -> CmdResult {
                 // 发送配置变更通知
                 logging!(info, Type::Cmd, "[删除订阅] 发送配置变更通知: {}", index);
                 handle::Handle::notify_profile_changed(index);
+                AutoBackupManager::trigger_backup(AutoBackupTrigger::ProfileChange);
             }
             Err(e) => {
                 logging!(error, Type::Cmd, "{}", e);
@@ -244,7 +265,7 @@ async fn validate_new_profile(new_profile: &String) -> Result<(), ()> {
                         );
                         handle::Handle::notice_message(
                             "config_validate::yaml_syntax_error",
-                            error_msg.clone(),
+                            error_msg,
                         );
                         Err(())
                     }
@@ -253,7 +274,7 @@ async fn validate_new_profile(new_profile: &String) -> Result<(), ()> {
                         logging!(error, Type::Cmd, "{}", error_msg);
                         handle::Handle::notice_message(
                             "config_validate::yaml_parse_error",
-                            error_msg.clone(),
+                            error_msg,
                         );
                         Err(())
                     }
@@ -262,19 +283,13 @@ async fn validate_new_profile(new_profile: &String) -> Result<(), ()> {
             Ok(Err(err)) => {
                 let error_msg = format!("无法读取目标配置文件: {err}");
                 logging!(error, Type::Cmd, "{}", error_msg);
-                handle::Handle::notice_message(
-                    "config_validate::file_read_error",
-                    error_msg.clone(),
-                );
+                handle::Handle::notice_message("config_validate::file_read_error", error_msg);
                 Err(())
             }
             Err(_) => {
                 let error_msg = "读取配置文件超时(5秒)".to_string();
                 logging!(error, Type::Cmd, "{}", error_msg);
-                handle::Handle::notice_message(
-                    "config_validate::file_read_timeout",
-                    error_msg.clone(),
-                );
+                handle::Handle::notice_message("config_validate::file_read_timeout", error_msg);
                 Err(())
             }
         }
@@ -467,6 +482,7 @@ pub async fn patch_profile(index: String, profile: PrfItem) -> CmdResult {
         });
     }
 
+    AutoBackupManager::trigger_backup(AutoBackupTrigger::ProfileChange);
     Ok(())
 }
 
@@ -479,7 +495,7 @@ pub async fn view_profile(index: String) -> CmdResult {
         .get_item(&index)
         .stringify_err()?
         .file
-        .clone()
+        .as_ref()
         .ok_or("the file field is null")?;
 
     let path = dirs::app_profiles_dir()
@@ -499,7 +515,11 @@ pub async fn read_profile_file(index: String) -> CmdResult<String> {
         let profiles = Config::profiles().await;
         let profiles_ref = profiles.latest_arc();
         PrfItem {
-            file: profiles_ref.get_item(&index).stringify_err()?.file.clone(),
+            file: profiles_ref
+                .get_item(&index)
+                .stringify_err()?
+                .file
+                .to_owned(),
             ..Default::default()
         }
     };

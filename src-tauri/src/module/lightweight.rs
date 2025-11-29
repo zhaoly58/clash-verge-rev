@@ -1,19 +1,16 @@
 use crate::{
     config::Config,
     core::{handle, timer::Timer, tray::Tray},
-    log_err, logging,
     process::AsyncHandler,
-    utils::logging::Type,
 };
 
-#[cfg(target_os = "macos")]
-use crate::logging_error;
+use clash_verge_logging::{Type, logging, logging_error};
 
 use crate::utils::window_manager::WindowManager;
-use anyhow::{Context, Result};
+use anyhow::{Context as _, Result};
 use delay_timer::prelude::TaskBuilder;
 use std::sync::atomic::{AtomicU8, AtomicU32, Ordering};
-use tauri::Listener;
+use tauri::Listener as _;
 
 const LIGHT_WEIGHT_TASK_UID: &str = "light_weight_task";
 
@@ -28,15 +25,15 @@ enum LightweightState {
 impl From<u8> for LightweightState {
     fn from(v: u8) -> Self {
         match v {
-            1 => LightweightState::In,
-            2 => LightweightState::Exiting,
-            _ => LightweightState::Normal,
+            1 => Self::In,
+            2 => Self::Exiting,
+            _ => Self::Normal,
         }
     }
 }
 
 impl LightweightState {
-    fn as_u8(self) -> u8 {
+    const fn as_u8(self) -> u8 {
         self as u8
     }
 }
@@ -184,7 +181,7 @@ fn cancel_window_close_listener() {
 fn setup_webview_focus_listener() {
     if let Some(window) = handle::Handle::get_window() {
         let handler_id = window.listen("tauri://focus", move |_event| {
-            log_err!(cancel_light_weight_timer());
+            logging_error!(Type::Lightweight, cancel_light_weight_timer());
             logging!(
                 debug,
                 Type::Lightweight,
@@ -268,11 +265,14 @@ async fn setup_light_weight_timer() -> Result<()> {
 }
 
 fn cancel_light_weight_timer() -> Result<()> {
-    let mut timer_map = Timer::global().timer_map.write();
-    let delay_timer = Timer::global().delay_timer.write();
-
-    if let Some(task) = timer_map.remove(LIGHT_WEIGHT_TASK_UID) {
-        delay_timer
+    let value = Timer::global()
+        .timer_map
+        .write()
+        .remove(LIGHT_WEIGHT_TASK_UID);
+    if let Some(task) = value {
+        Timer::global()
+            .delay_timer
+            .write()
             .remove_task(task.task_id)
             .context("failed to remove timer task")?;
         logging!(debug, Type::Timer, "计时器已取消");

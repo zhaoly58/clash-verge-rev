@@ -1,44 +1,6 @@
 import { fetch } from "@tauri-apps/plugin-http";
-import axios, { AxiosInstance } from "axios";
 
-import { getClashInfo } from "./cmds";
-
-let instancePromise: Promise<AxiosInstance> = null!;
-
-async function getInstancePromise() {
-  let server = "";
-  let secret = "";
-
-  try {
-    const info = await getClashInfo();
-
-    if (info?.server) {
-      server = info.server;
-
-      // compatible width `external-controller`
-      if (server.startsWith(":")) server = `127.0.0.1${server}`;
-      else if (/^\d+$/.test(server)) server = `127.0.0.1:${server}`;
-    }
-    if (info?.secret) secret = info?.secret;
-  } catch {}
-
-  const axiosIns = axios.create({
-    baseURL: `http://${server}`,
-    headers: secret ? { Authorization: `Bearer ${secret}` } : {},
-    timeout: 15000,
-  });
-  axiosIns.interceptors.response.use((r) => r.data);
-  return axiosIns;
-}
-
-/// initialize some information
-/// enable force update axiosIns
-export const getAxios = async (force: boolean = false) => {
-  if (!instancePromise || force) {
-    instancePromise = getInstancePromise();
-  }
-  return instancePromise;
-};
+import { debugLog } from "@/utils/debug";
 
 // Get current IP and geolocation information （refactored IP detection with service-specific mappings）
 interface IpInfo {
@@ -203,7 +165,7 @@ export const getIpInfo = async (): Promise<IpInfo> => {
     let lastError: Error | null = null;
 
     for (const service of shuffledServices) {
-      console.log(`尝试IP检测服务: ${service.url}`);
+      debugLog(`尝试IP检测服务: ${service.url}`);
 
       for (let attempt = 0; attempt < maxRetries; attempt++) {
         let timeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -213,6 +175,7 @@ export const getIpInfo = async (): Promise<IpInfo> => {
           timeoutId = setTimeout(() => {
             timeoutController.abort();
           }, service.timeout || serviceTimeout);
+          console.debug("Fetching IP information...");
 
           const response = await fetch(service.url, {
             method: "GET",
@@ -225,7 +188,7 @@ export const getIpInfo = async (): Promise<IpInfo> => {
           if (timeoutId) clearTimeout(timeoutId);
 
           if (data && data.ip) {
-            console.log(`IP检测成功，使用服务: ${service.url}`);
+            debugLog(`IP检测成功，使用服务: ${service.url}`);
             return service.mapping(data);
           } else {
             throw new Error(`无效的响应格式 from ${service.url}`);
