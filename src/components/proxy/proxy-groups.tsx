@@ -15,7 +15,7 @@ import { useTranslation } from "react-i18next";
 import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 import { delayGroup, healthcheckProxyProvider } from "tauri-plugin-mihomo-api";
 
-import { useProxiesData } from "@/hooks/app-data";
+import { useProxiesData } from "@/hooks/use-clash-data";
 import { useProxySelection } from "@/hooks/use-proxy-selection";
 import { useVerge } from "@/hooks/use-verge";
 import { updateProxyChainConfigInRuntime } from "@/services/cmds";
@@ -597,17 +597,15 @@ export const ProxyGroups = (props: Props) => {
         initialScrollTop={scrollPositionRef.current[mode]}
         computeItemKey={(index) => renderList[index].key}
         itemContent={(index) => (
-          <div style={{ paddingRight: 14 }}>
-            <ProxyRender
-              key={renderList[index].key}
-              item={renderList[index]}
-              indent={mode === "rule" || mode === "script"}
-              onLocation={handleLocation}
-              onCheckAll={handleCheckAll}
-              onHeadState={onHeadState}
-              onChangeProxy={handleChangeProxy}
-            />
-          </div>
+          <ProxyRender
+            key={renderList[index].key}
+            item={renderList[index]}
+            indent={mode === "rule" || mode === "script"}
+            onLocation={handleLocation}
+            onCheckAll={handleCheckAll}
+            onHeadState={onHeadState}
+            onChangeProxy={handleChangeProxy}
+          />
         )}
       />
       <ScrollTopButton show={showScrollTop} onClick={scrollToTop} />
