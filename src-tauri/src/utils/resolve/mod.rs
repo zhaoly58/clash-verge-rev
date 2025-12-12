@@ -56,12 +56,7 @@ pub fn resolve_setup_sync() {
 
 pub fn resolve_setup_async() {
     AsyncHandler::spawn(|| async {
-        logging!(
-            info,
-            Type::ClashVergeRev,
-            "Version: {}",
-            env!("CARGO_PKG_VERSION")
-        );
+        logging!(info, Type::ClashVergeRev, "Version: {}", env!("CARGO_PKG_VERSION"));
 
         futures::join!(init_work_config(), init_resources(), init_startup_script());
 
@@ -148,11 +143,7 @@ pub(super) async fn init_auto_backup() {
 
 pub fn init_signal() {
     logging!(info, Type::Setup, "Initializing signal handlers...");
-    clash_verge_signal::register(
-        #[cfg(windows)]
-        handle::Handle::app_handle(),
-        feat::quit,
-    );
+    clash_verge_signal::register(feat::quit);
 }
 
 pub async fn init_work_config() {
@@ -185,10 +176,7 @@ pub(super) async fn init_core_manager() {
 }
 
 pub(super) async fn init_system_proxy() {
-    logging_error!(
-        Type::Setup,
-        sysopt::Sysopt::global().update_sysproxy().await
-    );
+    logging_error!(Type::Setup, sysopt::Sysopt::global().update_sysproxy().await);
 }
 
 pub(super) async fn init_system_proxy_guard() {
@@ -200,11 +188,7 @@ pub(super) async fn refresh_tray_menu() {
 }
 
 pub(super) async fn init_window() {
-    let is_silent_start = Config::verge()
-        .await
-        .data_arc()
-        .enable_silent_start
-        .unwrap_or(false);
+    let is_silent_start = Config::verge().await.data_arc().enable_silent_start.unwrap_or(false);
     #[cfg(target_os = "macos")]
     if is_silent_start {
         use crate::core::handle::Handle;
