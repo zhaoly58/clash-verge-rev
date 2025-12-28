@@ -1,4 +1,4 @@
-use once_cell::sync::OnceCell;
+use governor::{DefaultDirectRateLimiter, Quota, RateLimiter};
 use tauri::tray::TrayIconBuilder;
 use tauri_plugin_clash_verge_sysinfo::is_current_app_handle_admin;
 use tauri_plugin_mihomo::models::Proxies;
@@ -12,23 +12,17 @@ use crate::process::AsyncHandler;
 use crate::singleton;
 use crate::utils::window_manager::WindowManager;
 use crate::{
-    Type, cmd,
-    config::Config,
-    feat, logging,
-    module::lightweight::is_in_lightweight_mode,
-    utils::{dirs::find_target_icons, i18n},
+    Type, cmd, config::Config, feat, logging, module::lightweight::is_in_lightweight_mode,
+    utils::dirs::find_target_icons,
 };
 
 use super::handle;
 use anyhow::Result;
-use parking_lot::Mutex;
 use smartstring::alias::String;
 use std::collections::HashMap;
+use std::num::NonZeroU32;
 use std::sync::Arc;
-use std::{
-    sync::atomic::{AtomicBool, Ordering},
-    time::{Duration, Instant},
-};
+use std::time::Duration;
 use tauri::{
     AppHandle, Wry,
     menu::{CheckMenuItem, IsMenuItem, MenuEvent, MenuItem, PredefinedMenuItem, Submenu},
@@ -41,45 +35,13 @@ use menu_def::{MenuIds, MenuTexts};
 
 type ProxyMenuItem = (Option<Submenu<Wry>>, Vec<Box<dyn IsMenuItem<Wry>>>);
 
+const TRAY_CLICK_DEBOUNCE_MS: u64 = 1_275;
+
 #[derive(Clone)]
 struct TrayState {}
 
-// 托盘点击防抖机制
-static TRAY_CLICK_DEBOUNCE: OnceCell<Mutex<Instant>> = OnceCell::new();
-const TRAY_CLICK_DEBOUNCE_MS: u64 = 300;
-
-fn get_tray_click_debounce() -> &'static Mutex<Instant> {
-    TRAY_CLICK_DEBOUNCE.get_or_init(|| Mutex::new(Instant::now() - Duration::from_secs(1)))
-}
-
-fn should_handle_tray_click() -> bool {
-    let debounce_lock = get_tray_click_debounce();
-    let now = Instant::now();
-
-    if now.duration_since(*debounce_lock.lock()) >= Duration::from_millis(TRAY_CLICK_DEBOUNCE_MS) {
-        *debounce_lock.lock() = now;
-        true
-    } else {
-        logging!(
-            debug,
-            Type::Tray,
-            "托盘点击被防抖机制忽略，距离上次点击 {}ms",
-            now.duration_since(*debounce_lock.lock()).as_millis()
-        );
-        false
-    }
-}
-
-#[cfg(target_os = "macos")]
 pub struct Tray {
-    last_menu_update: Mutex<Option<Instant>>,
-    menu_updating: AtomicBool,
-}
-
-#[cfg(not(target_os = "macos"))]
-pub struct Tray {
-    last_menu_update: Mutex<Option<Instant>>,
-    menu_updating: AtomicBool,
+    limiter: DefaultDirectRateLimiter,
 }
 
 impl TrayState {
@@ -162,10 +124,14 @@ impl TrayState {
 }
 
 impl Default for Tray {
+    #[allow(clippy::unwrap_used)]
     fn default() -> Self {
         Self {
-            last_menu_update: Mutex::new(None),
-            menu_updating: AtomicBool::new(false),
+            limiter: RateLimiter::direct(
+                Quota::with_period(Duration::from_millis(TRAY_CLICK_DEBOUNCE_MS))
+                    .unwrap()
+                    .allow_burst(NonZeroU32::new(1).unwrap()),
+            ),
         }
     }
 }
@@ -227,53 +193,16 @@ impl Tray {
             logging!(debug, Type::Tray, "应用正在退出，跳过托盘菜单更新");
             return Ok(());
         }
-        // 调整最小更新间隔，确保状态及时刷新
-        const MIN_UPDATE_INTERVAL: Duration = Duration::from_millis(100);
-
-        // 检查是否正在更新
-        if self.menu_updating.load(Ordering::Acquire) {
-            return Ok(());
-        }
-
-        // 检查更新频率，但允许重要事件跳过频率限制
-        let should_force_update = match std::thread::current().name() {
-            Some("main") => true,
-            _ => {
-                let last_update = self.last_menu_update.lock();
-                if let Some(last_time) = *last_update {
-                    last_time.elapsed() >= MIN_UPDATE_INTERVAL
-                } else {
-                    true
-                }
-            }
-        };
-
-        if !should_force_update {
-            return Ok(());
-        }
-
         let app_handle = handle::Handle::app_handle();
-
-        // 设置更新状态
-        self.menu_updating.store(true, Ordering::Release);
-
-        let result = self.update_menu_internal(app_handle).await;
-
-        {
-            let mut last_update = self.last_menu_update.lock();
-            *last_update = Some(Instant::now());
-        }
-        self.menu_updating.store(false, Ordering::Release);
-
-        result
+        self.update_menu_internal(app_handle).await
     }
 
     async fn update_menu_internal(&self, app_handle: &AppHandle) -> Result<()> {
         let verge = Config::verge().await.latest_arc();
         let system_proxy = verge.enable_system_proxy.as_ref().unwrap_or(&false);
         let tun_mode = verge.enable_tun_mode.as_ref().unwrap_or(&false);
-        let tun_mode_available = is_current_app_handle_admin(app_handle)
-            || (service::is_service_ipc_path_exists() && service::is_service_available().await.is_ok());
+        let tun_mode_available =
+            is_current_app_handle_admin(app_handle) || service::is_service_available().await.is_ok();
         let mode = {
             Config::clash()
                 .await
@@ -389,8 +318,6 @@ impl Tray {
 
         let app_handle = handle::Handle::app_handle();
 
-        i18n::sync_locale().await;
-
         let verge = Config::verge().await.latest_arc();
         let system_proxy = verge.enable_system_proxy.as_ref().unwrap_or(&false);
         let tun_mode = verge.enable_tun_mode.as_ref().unwrap_or(&false);
@@ -417,9 +344,9 @@ impl Tray {
         }
 
         // Get localized strings before using them
-        let sys_proxy_text = rust_i18n::t!("tray.tooltip.systemProxy");
-        let tun_text = rust_i18n::t!("tray.tooltip.tun");
-        let profile_text = rust_i18n::t!("tray.tooltip.profile");
+        let sys_proxy_text = clash_verge_i18n::t!("tray.tooltip.systemProxy");
+        let tun_text = clash_verge_i18n::t!("tray.tooltip.tun");
+        let profile_text = clash_verge_i18n::t!("tray.tooltip.profile");
 
         let v = env!("CARGO_PKG_VERSION");
         let reassembled_version = v.split_once('+').map_or_else(
@@ -480,12 +407,16 @@ impl Tray {
         let show_menu_on_left_click = {
             // TODO 优化这里 复用 verge
             let tray_event = { Config::verge().await.latest_arc().tray_event.clone() };
-            let tray_event: String = tray_event.unwrap_or_else(|| "main_window".into());
-            tray_event.as_str() == "tray_menu"
+            tray_event.is_some_and(|v| v == "tray_menu")
         };
 
         #[cfg(not(target_os = "linux"))]
         let mut builder = TrayIconBuilder::with_id("main").icon(icon).icon_as_template(false);
+        #[cfg(target_os = "macos")]
+        {
+            let is_monochrome = verge.tray_icon.clone().is_none_or(|v| v == "monochrome");
+            builder = builder.icon_as_template(is_monochrome);
+        }
 
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         {
@@ -503,15 +434,15 @@ impl Tray {
                 ..
             } = event
             {
+                // 添加防抖检查，防止快速连击
+                #[allow(clippy::use_self)]
+                if !Tray::global().should_handle_tray_click() {
+                    return;
+                }
                 AsyncHandler::spawn(|| async move {
                     let tray_event = { Config::verge().await.latest_arc().tray_event.clone() };
                     let tray_event: String = tray_event.unwrap_or_else(|| "main_window".into());
                     logging!(debug, Type::Tray, "tray event: {tray_event:?}");
-
-                    // 添加防抖检查，防止快速连击
-                    if !should_handle_tray_click() {
-                        return;
-                    }
 
                     match tray_event.as_str() {
                         "system_proxy" => feat::toggle_system_proxy().await,
@@ -521,13 +452,23 @@ impl Tray {
                                 WindowManager::show_main_window().await;
                             };
                         }
-                        _ => {}
+                        _ => {
+                            logging!(warn, Type::Tray, "invalid tray event: {}", tray_event);
+                        }
                     };
                 });
             }
         });
         tray.on_menu_event(on_menu_event);
         Ok(())
+    }
+
+    fn should_handle_tray_click(&self) -> bool {
+        let res = self.limiter.check().is_ok();
+        if !res {
+            logging!(debug, Type::Tray, "tray click rate limited");
+        }
+        res
     }
 }
 
@@ -718,9 +659,7 @@ async fn create_tray_menu(
 ) -> Result<tauri::menu::Menu<Wry>> {
     let current_proxy_mode = mode.unwrap_or("");
 
-    i18n::sync_locale().await;
-
-    // TODO: mihomo 请求的超时机制未起作用，需要排查
+    // TODO: should update tray menu again when it was timeout error
     let proxy_nodes_data = tokio::time::timeout(
         Duration::from_millis(1000),
         handle::Handle::mihomo().await.get_proxies(),
@@ -764,7 +703,11 @@ async fn create_tray_menu(
         });
 
     let verge_settings = Config::verge().await.latest_arc();
-    let show_proxy_groups_inline = verge_settings.tray_inline_proxy_groups.unwrap_or(true);
+    let tray_proxy_groups_display_mode = verge_settings
+        .tray_proxy_groups_display_mode
+        .as_deref()
+        .unwrap_or("default");
+    let show_outbound_modes_inline = verge_settings.tray_inline_outbound_modes.unwrap_or(false);
 
     let version = env!("CARGO_PKG_VERSION");
 
@@ -787,13 +730,6 @@ async fn create_tray_menu(
         true,
         hotkeys.get("open_or_close_dashboard").map(|s| s.as_str()),
     )?;
-
-    let current_mode_text = match current_proxy_mode {
-        "global" => rust_i18n::t!("tray.global"),
-        "direct" => rust_i18n::t!("tray.direct"),
-        _ => rust_i18n::t!("tray.rule"),
-    };
-    let outbound_modes_label = format!("{} ({})", texts.outbound_modes, current_mode_text);
 
     let rule_mode = &CheckMenuItem::with_id(
         app_handle,
@@ -822,17 +758,27 @@ async fn create_tray_menu(
         hotkeys.get("clash_mode_direct").map(|s| s.as_str()),
     )?;
 
-    let outbound_modes = &Submenu::with_id_and_items(
-        app_handle,
-        MenuIds::OUTBOUND_MODES,
-        outbound_modes_label.as_str(),
-        true,
-        &[
-            rule_mode as &dyn IsMenuItem<Wry>,
-            global_mode as &dyn IsMenuItem<Wry>,
-            direct_mode as &dyn IsMenuItem<Wry>,
-        ],
-    )?;
+    let outbound_modes = if show_outbound_modes_inline {
+        None
+    } else {
+        let current_mode_text = match current_proxy_mode {
+            "global" => clash_verge_i18n::t!("tray.global"),
+            "direct" => clash_verge_i18n::t!("tray.direct"),
+            _ => clash_verge_i18n::t!("tray.rule"),
+        };
+        let outbound_modes_label = format!("{} ({})", texts.outbound_modes, current_mode_text);
+        Some(Submenu::with_id_and_items(
+            app_handle,
+            MenuIds::OUTBOUND_MODES,
+            outbound_modes_label.as_str(),
+            true,
+            &[
+                rule_mode as &dyn IsMenuItem<Wry>,
+                global_mode as &dyn IsMenuItem<Wry>,
+                direct_mode as &dyn IsMenuItem<Wry>,
+            ],
+        )?)
+    };
 
     let profiles = &Submenu::with_id_and_items(
         app_handle,
@@ -845,8 +791,11 @@ async fn create_tray_menu(
     let proxy_sub_menus =
         create_subcreate_proxy_menu_item(app_handle, current_proxy_mode, proxy_group_order_map, proxy_nodes_data);
 
-    let (proxies_menu, inline_proxy_items) =
-        create_proxy_menu_item(app_handle, show_proxy_groups_inline, proxy_sub_menus, &texts.proxies)?;
+    let (proxies_menu, inline_proxy_items) = match tray_proxy_groups_display_mode {
+        "default" => create_proxy_menu_item(app_handle, false, proxy_sub_menus, &texts.proxies)?,
+        "inline" => create_proxy_menu_item(app_handle, true, proxy_sub_menus, &texts.proxies)?,
+        _ => (None, Vec::new()),
+    };
 
     let system_proxy = &CheckMenuItem::with_id(
         app_handle,
@@ -940,15 +889,29 @@ async fn create_tray_menu(
     let separator = &PredefinedMenuItem::separator(app_handle)?;
 
     // 动态构建菜单项
-    let mut menu_items: Vec<&dyn IsMenuItem<Wry>> = vec![open_window, outbound_modes, separator, profiles];
+    let mut menu_items: Vec<&dyn IsMenuItem<Wry>> = vec![open_window, separator];
+
+    if show_outbound_modes_inline {
+        menu_items.extend_from_slice(&[
+            rule_mode as &dyn IsMenuItem<Wry>,
+            global_mode as &dyn IsMenuItem<Wry>,
+            direct_mode as &dyn IsMenuItem<Wry>,
+        ]);
+    } else if let Some(ref outbound_modes) = outbound_modes {
+        menu_items.push(outbound_modes);
+    }
+
+    menu_items.extend_from_slice(&[separator, profiles]);
 
     // 如果有代理节点，添加代理节点菜单
-    if show_proxy_groups_inline {
-        if !inline_proxy_items.is_empty() {
+    match tray_proxy_groups_display_mode {
+        "default" => {
+            menu_items.extend(proxies_menu.iter().map(|item| item as &dyn IsMenuItem<_>));
+        }
+        "inline" if !inline_proxy_items.is_empty() => {
             menu_items.extend(inline_proxy_items.iter().map(|item| item.as_ref()));
         }
-    } else if let Some(ref proxies_menu) = proxies_menu {
-        menu_items.push(proxies_menu);
+        _ => {}
     }
 
     menu_items.extend_from_slice(&[
@@ -971,17 +934,13 @@ fn on_menu_event(_: &AppHandle, event: MenuEvent) {
     AsyncHandler::spawn(|| async move {
         match event.id.as_ref() {
             mode @ (MenuIds::RULE_MODE | MenuIds::GLOBAL_MODE | MenuIds::DIRECT_MODE) => {
-                // Removing the the "tray_" preffix and "_mode" suffix
+                // Removing the the "tray_" prefix and "_mode" suffix
                 let mode = &mode[5..mode.len() - 5];
                 logging!(info, Type::ProxyMode, "Switch Proxy Mode To: {}", mode);
                 feat::change_clash_mode(mode.into()).await;
             }
             MenuIds::DASHBOARD => {
                 logging!(info, Type::Tray, "托盘菜单点击: 打开窗口");
-
-                if !should_handle_tray_click() {
-                    return;
-                }
                 if !lightweight::exit_lightweight_mode().await {
                     WindowManager::show_main_window().await;
                 };
@@ -1017,9 +976,6 @@ fn on_menu_event(_: &AppHandle, event: MenuEvent) {
             MenuIds::RESTART_CLASH => feat::restart_clash_core().await,
             MenuIds::RESTART_APP => feat::restart_app().await,
             MenuIds::LIGHTWEIGHT_MODE => {
-                if !should_handle_tray_click() {
-                    return;
-                }
                 if !is_in_lightweight_mode() {
                     lightweight::entry_lightweight_mode().await;
                 } else {

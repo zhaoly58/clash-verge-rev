@@ -65,6 +65,9 @@ impl Config {
     pub async fn init_config() -> Result<()> {
         Self::ensure_default_profile_items().await?;
 
+        let verge = Self::verge().await.latest_arc();
+        clash_verge_i18n::sync_locale(verge.language.as_deref());
+
         // init Tun mode
         let handle = Handle::app_handle();
         let is_admin = is_current_app_handle_admin(handle);
@@ -87,6 +90,12 @@ impl Config {
         if let Some((msg_type, msg_content)) = validation_result {
             sleep(timing::STARTUP_ERROR_DELAY).await;
             handle::Handle::notice_message(msg_type, msg_content);
+        }
+
+        {
+            let profiles = Self::profiles().await.data_arc();
+            // Logging error internally
+            let _ = profiles.cleanup_orphaned_files().await;
         }
 
         Ok(())

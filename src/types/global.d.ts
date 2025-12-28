@@ -814,13 +814,16 @@ interface IVergeConfig {
   enable_group_icon?: boolean;
   menu_icon?: "monochrome" | "colorful" | "disable";
   menu_order?: string[];
+  notice_position?: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  collapse_navbar?: boolean;
   tray_icon?: "monochrome" | "colorful";
   common_tray_icon?: boolean;
   sysproxy_tray_icon?: boolean;
   tun_tray_icon?: boolean;
   // enable_tray_speed?: boolean;
   // enable_tray_icon?: boolean;
-  tray_inline_proxy_groups?: boolean;
+  tray_proxy_groups_display_mode?: "default" | "inline" | "disable";
+  tray_inline_outbound_modes?: boolean;
   enable_tun_mode?: boolean;
   enable_auto_light_weight_mode?: boolean;
   auto_light_weight_minutes?: number;

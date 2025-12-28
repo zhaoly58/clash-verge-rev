@@ -1,12 +1,14 @@
 #[cfg(target_os = "windows")]
-use crate::utils::autostart as startup_shortcut;
+use crate::utils::schtasks as startup_task;
 use crate::{
     config::{Config, IVerge},
     core::handle::Handle,
     singleton,
 };
 use anyhow::Result;
-use clash_verge_logging::{Type, logging, logging_error};
+#[cfg(not(target_os = "windows"))]
+use clash_verge_logging::logging_error;
+use clash_verge_logging::{Type, logging};
 use parking_lot::RwLock;
 use scopeguard::defer;
 use smartstring::alias::String;
@@ -18,12 +20,14 @@ use std::{
     time::Duration,
 };
 use sysproxy::{Autoproxy, GuardMonitor, GuardType, Sysproxy};
+#[cfg(not(target_os = "windows"))]
 use tauri_plugin_autostart::ManagerExt as _;
+#[cfg(target_os = "windows")]
+use tauri_plugin_clash_verge_sysinfo::is_current_app_handle_admin;
 
 pub struct Sysopt {
     update_sysproxy: AtomicBool,
     reset_sysproxy: AtomicBool,
-    #[cfg(not(target_os = "windows"))]
     inner_proxy: Arc<RwLock<(Sysproxy, Autoproxy)>>,
     guard: Arc<RwLock<GuardMonitor>>,
 }
@@ -33,7 +37,6 @@ impl Default for Sysopt {
         Self {
             update_sysproxy: AtomicBool::new(false),
             reset_sysproxy: AtomicBool::new(false),
-            #[cfg(not(target_os = "windows"))]
             inner_proxy: Arc::new(RwLock::new((Sysproxy::default(), Autoproxy::default()))),
             guard: Arc::new(RwLock::new(GuardMonitor::new(GuardType::None, Duration::from_secs(30)))),
         }
@@ -69,35 +72,6 @@ async fn get_bypass() -> String {
     }
 }
 
-// Uses tokio Command with CREATE_NO_WINDOW flag to avoid DLL initialization issues during shutdown
-#[cfg(target_os = "windows")]
-async fn execute_sysproxy_command(args: Vec<std::string::String>) -> Result<()> {
-    use crate::utils::dirs;
-    use anyhow::bail;
-    #[allow(unused_imports)] // Required for .creation_flags() method
-    use std::os::windows::process::CommandExt as _;
-    use tokio::process::Command;
-
-    let binary_path = dirs::service_path()?;
-    let sysproxy_exe = binary_path.with_file_name("sysproxy.exe");
-
-    if !sysproxy_exe.exists() {
-        bail!("sysproxy.exe not found");
-    }
-
-    let output = Command::new(sysproxy_exe)
-        .args(args)
-        .creation_flags(0x08000000) // CREATE_NO_WINDOW - 隐藏窗口
-        .output()
-        .await?;
-
-    if !output.status.success() {
-        bail!("sysproxy exe run failed");
-    }
-
-    Ok(())
-}
-
 singleton!(Sysopt, SYSOPT);
 
 impl Sysopt {
@@ -112,12 +86,12 @@ impl Sysopt {
     pub async fn refresh_guard(&self) {
         logging!(info, Type::Core, "Refreshing system proxy guard...");
         let verge = Config::verge().await.latest_arc();
-        if !verge.enable_system_proxy.unwrap_or(false) {
+        if !verge.enable_system_proxy.unwrap_or_default() {
             logging!(info, Type::Core, "System proxy is disabled.");
             self.access_guard().write().stop();
             return;
         }
-        if !verge.enable_proxy_guard.unwrap_or(false) {
+        if !verge.enable_proxy_guard.unwrap_or_default() {
             logging!(info, Type::Core, "System proxy guard is disabled.");
             return;
         }
@@ -169,94 +143,62 @@ impl Sysopt {
         };
         let pac_port = IVerge::get_singleton_port();
 
-        let (sys_enable, pac_enable, proxy_host) = {
+        let (sys_enable, pac_enable, proxy_host, proxy_guard) = {
             (
-                verge.enable_system_proxy.unwrap_or(false),
-                verge.proxy_auto_config.unwrap_or(false),
+                verge.enable_system_proxy.unwrap_or_default(),
+                verge.proxy_auto_config.unwrap_or_default(),
                 verge.proxy_host.clone().unwrap_or_else(|| String::from("127.0.0.1")),
+                verge.enable_proxy_guard.unwrap_or_default(),
             )
         };
 
-        #[cfg(not(target_os = "windows"))]
-        {
-            // 先 await, 避免持有锁导致的 Send 问题
-            let bypass = get_bypass().await;
+        // 先 await, 避免持有锁导致的 Send 问题
+        let bypass = get_bypass().await;
 
-            let (sys, auto) = &mut *self.inner_proxy.write();
+        let (sys, auto) = &mut *self.inner_proxy.write();
+        sys.enable = false;
+        sys.host = proxy_host.clone().into();
+        sys.port = port;
+        sys.bypass = bypass.into();
+
+        auto.enable = false;
+        auto.url = format!("http://{proxy_host}:{pac_port}/commands/pac");
+
+        self.access_guard().write().set_guard_type(GuardType::None);
+
+        if !sys_enable && !pac_enable {
+            // disable proxy
+            sys.set_system_proxy()?;
+            auto.set_auto_proxy()?;
+            return Ok(());
+        }
+
+        if pac_enable {
             sys.enable = false;
-            sys.host = proxy_host.clone().into();
-            sys.port = port;
-            sys.bypass = bypass.into();
-
-            auto.enable = false;
-            auto.url = format!("http://{proxy_host}:{pac_port}/commands/pac");
-
-            if !sys_enable {
-                sys.set_system_proxy()?;
-                auto.set_auto_proxy()?;
-                self.access_guard()
-                    .write()
-                    .set_guard_type(GuardType::Sysproxy(sys.clone()));
-                return Ok(());
-            }
-
-            if pac_enable {
-                sys.enable = false;
-                auto.enable = true;
-                sys.set_system_proxy()?;
-                auto.set_auto_proxy()?;
+            auto.enable = true;
+            sys.set_system_proxy()?;
+            auto.set_auto_proxy()?;
+            if proxy_guard {
                 self.access_guard()
                     .write()
                     .set_guard_type(GuardType::Autoproxy(auto.clone()));
-                return Ok(());
             }
+            return Ok(());
+        }
 
-            if sys_enable {
-                auto.enable = false;
-                sys.enable = true;
-                auto.set_auto_proxy()?;
-                sys.set_system_proxy()?;
+        if sys_enable {
+            auto.enable = false;
+            sys.enable = true;
+            auto.set_auto_proxy()?;
+            sys.set_system_proxy()?;
+            if proxy_guard {
                 self.access_guard()
                     .write()
                     .set_guard_type(GuardType::Sysproxy(sys.clone()));
-                return Ok(());
             }
+            return Ok(());
         }
 
-        #[cfg(target_os = "windows")]
-        {
-            if !sys_enable {
-                self.access_guard().write().set_guard_type(GuardType::None);
-                return self.reset_sysproxy().await;
-            }
-
-            let (args, guard_type): (Vec<std::string::String>, GuardType) = if pac_enable {
-                let address = format!("http://{proxy_host}:{pac_port}/commands/pac");
-                (
-                    vec!["pac".into(), address.clone()],
-                    GuardType::Autoproxy(Autoproxy {
-                        enable: true,
-                        url: address,
-                    }),
-                )
-            } else {
-                let address = format!("{proxy_host}:{port}");
-                let bypass = get_bypass().await;
-                let bypass_for_guard = bypass.as_str().to_owned();
-                (
-                    vec!["global".into(), address.clone(), bypass.into()],
-                    GuardType::Sysproxy(Sysproxy {
-                        enable: true,
-                        host: proxy_host.clone().into(),
-                        port,
-                        bypass: bypass_for_guard,
-                    }),
-                )
-            };
-
-            execute_sysproxy_command(args).await?;
-            self.access_guard().write().set_guard_type(guard_type);
-        }
         Ok(())
     }
 
@@ -274,20 +216,15 @@ impl Sysopt {
             self.reset_sysproxy.store(false, Ordering::SeqCst);
         }
 
-        //直接关闭所有代理
-        #[cfg(not(target_os = "windows"))]
-        {
-            let (sys, auto) = &mut *self.inner_proxy.write();
-            sys.enable = false;
-            sys.set_system_proxy()?;
-            auto.enable = false;
-            auto.set_auto_proxy()?;
-        }
+        // close proxy guard
+        self.access_guard().write().set_guard_type(GuardType::None);
 
-        #[cfg(target_os = "windows")]
-        {
-            execute_sysproxy_command(vec!["set".into(), "1".into()]).await?;
-        }
+        // 直接关闭所有代理
+        let (sys, auto) = &mut *self.inner_proxy.write();
+        sys.enable = false;
+        sys.set_system_proxy()?;
+        auto.enable = false;
+        auto.set_auto_proxy()?;
 
         Ok(())
     }
@@ -298,35 +235,21 @@ impl Sysopt {
         let is_enable = enable_auto_launch.unwrap_or(false);
         logging!(info, Type::System, "Setting auto-launch state to: {:?}", is_enable);
 
-        // 首先尝试使用快捷方式方法
         #[cfg(target_os = "windows")]
         {
-            if is_enable {
-                if let Err(e) = startup_shortcut::create_shortcut().await {
-                    logging!(error, Type::Setup, "创建启动快捷方式失败: {e}");
-                    // 如果快捷方式创建失败，回退到原来的方法
-                    self.try_original_autostart_method(is_enable);
-                } else {
-                    return Ok(());
-                }
-            } else if let Err(e) = startup_shortcut::remove_shortcut().await {
-                logging!(error, Type::Setup, "删除启动快捷方式失败: {e}");
-                self.try_original_autostart_method(is_enable);
-            } else {
-                return Ok(());
-            }
+            let is_admin = is_current_app_handle_admin(Handle::app_handle());
+            startup_task::set_auto_launch(is_enable, is_admin).await
         }
 
         #[cfg(not(target_os = "windows"))]
         {
-            // 非Windows平台使用原来的方法
             self.try_original_autostart_method(is_enable);
+            Ok(())
         }
-
-        Ok(())
     }
 
     /// 尝试使用原来的自启动方法
+    #[cfg(not(target_os = "windows"))]
     fn try_original_autostart_method(&self, is_enable: bool) {
         let app_handle = Handle::app_handle();
         let autostart_manager = app_handle.autolaunch();
@@ -340,32 +263,28 @@ impl Sysopt {
 
     /// 获取当前自启动的实际状态
     pub fn get_launch_status(&self) -> Result<bool> {
-        // 首先尝试检查快捷方式是否存在
         #[cfg(target_os = "windows")]
         {
-            match startup_shortcut::is_shortcut_enabled() {
-                Ok(enabled) => {
-                    logging!(info, Type::System, "快捷方式自启动状态: {enabled}");
-                    return Ok(enabled);
-                }
-                Err(e) => {
-                    logging!(error, Type::System, "检查快捷方式失败，尝试原来的方法: {e}");
-                }
+            let enabled = startup_task::is_auto_launch_enabled();
+            if let Ok(status) = enabled {
+                logging!(info, Type::System, "Auto launch status (scheduled task): {status}");
             }
+            enabled
         }
 
-        // 回退到原来的方法
-        let app_handle = Handle::app_handle();
-        let autostart_manager = app_handle.autolaunch();
-
-        match autostart_manager.is_enabled() {
-            Ok(status) => {
-                logging!(info, Type::System, "Auto launch status: {status}");
-                Ok(status)
-            }
-            Err(e) => {
-                logging!(error, Type::System, "Failed to get auto launch status: {e}");
-                Err(anyhow::anyhow!("Failed to get auto launch status: {}", e))
+        #[cfg(not(target_os = "windows"))]
+        {
+            let app_handle = Handle::app_handle();
+            let autostart_manager = app_handle.autolaunch();
+            match autostart_manager.is_enabled() {
+                Ok(status) => {
+                    logging!(info, Type::System, "Auto launch status: {status}");
+                    Ok(status)
+                }
+                Err(e) => {
+                    logging!(error, Type::System, "Failed to get auto launch status: {e}");
+                    Err(anyhow::anyhow!("Failed to get auto launch status: {}", e))
+                }
             }
         }
     }

@@ -28,19 +28,21 @@ pub mod window_script;
 
 static RESOLVE_DONE: AtomicBool = AtomicBool::new(false);
 
-pub async fn prioritize_initialization() -> Option<LoggerHandle> {
-    init_work_config().await;
-    init_resources().await;
+pub fn init_work_dir_and_logger() -> Option<LoggerHandle> {
+    AsyncHandler::block_on(async {
+        init_work_config().await;
+        init_resources().await;
 
-    #[cfg(not(feature = "tauri-dev"))]
-    {
-        logging!(info, Type::Setup, "Initializing logger");
-        init::init_logger().await.ok()
-    }
-    #[cfg(feature = "tauri-dev")]
-    {
-        None
-    }
+        #[cfg(not(feature = "tauri-dev"))]
+        {
+            logging!(info, Type::Setup, "Initializing logger");
+            init::init_logger().await.ok()
+        }
+        #[cfg(feature = "tauri-dev")]
+        {
+            None
+        }
+    })
 }
 
 pub fn resolve_setup_handle() {
@@ -58,8 +60,7 @@ pub fn resolve_setup_async() {
     AsyncHandler::spawn(|| async {
         logging!(info, Type::ClashVergeRev, "Version: {}", env!("CARGO_PKG_VERSION"));
 
-        futures::join!(init_work_config(), init_resources(), init_startup_script());
-
+        init_startup_script().await;
         init_verge_config().await;
         Config::verify_config_initialization().await;
         init_window().await;
@@ -130,7 +131,9 @@ pub(super) async fn init_timer() {
 }
 
 pub(super) async fn init_hotkey() {
-    logging_error!(Type::Setup, Hotkey::global().init(false).await);
+    // if hotkey is not use by global, skip init it
+    let skip_register_hotkeys = !Config::verge().await.latest_arc().enable_global_hotkey.unwrap_or(true);
+    logging_error!(Type::Setup, Hotkey::global().init(skip_register_hotkeys).await);
 }
 
 pub(super) async fn init_auto_lightweight_boot() {
@@ -151,9 +154,6 @@ pub async fn init_work_config() {
 }
 
 pub(super) async fn init_tray() {
-    if std::env::var("CLASH_VERGE_DISABLE_TRAY").unwrap_or_default() == "1" {
-        return;
-    }
     logging_error!(Type::Setup, Tray::global().init().await);
 }
 

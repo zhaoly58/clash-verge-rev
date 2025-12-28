@@ -10,8 +10,7 @@ mod feat;
 mod module;
 mod process;
 pub mod utils;
-use crate::utils::resolve::init_signal;
-use crate::{constants::files, utils::resolve::prioritize_initialization};
+use crate::constants::files;
 use crate::{
     core::handle,
     process::AsyncHandler,
@@ -20,15 +19,12 @@ use crate::{
 use anyhow::Result;
 use clash_verge_logging::{Type, logging};
 use once_cell::sync::OnceCell;
-use rust_i18n::i18n;
 use std::time::Duration;
 use tauri::{AppHandle, Manager as _};
 #[cfg(target_os = "macos")]
 use tauri_plugin_autostart::MacosLauncher;
 use tauri_plugin_deep_link::DeepLinkExt as _;
 use tauri_plugin_mihomo::RejectPolicy;
-
-i18n!("locales", fallback = "zh");
 
 pub static APP_HANDLE: OnceCell<AppHandle> = OnceCell::new();
 /// Application initialization helper functions
@@ -138,6 +134,7 @@ mod app_init {
             tauri_plugin_clash_verge_sysinfo::commands::get_app_uptime,
             tauri_plugin_clash_verge_sysinfo::commands::app_is_admin,
             tauri_plugin_clash_verge_sysinfo::commands::export_diagnostic_info,
+            cmd::is_port_in_use,
             cmd::get_sys_proxy,
             cmd::get_auto_proxy,
             cmd::open_app_dir,
@@ -211,6 +208,7 @@ mod app_init {
             cmd::list_local_backup,
             cmd::delete_local_backup,
             cmd::restore_local_backup,
+            cmd::import_local_backup,
             cmd::export_local_backup,
             cmd::create_webdav_backup,
             cmd::save_webdav_config,
@@ -228,6 +226,9 @@ pub fn run() {
         return;
     }
 
+    #[cfg(target_os = "linux")]
+    utils::linux::workarounds::apply_nvidia_dmabuf_renderer_workaround();
+
     let _ = utils::dirs::init_portable_flag();
 
     let builder = app_init::setup_plugins(tauri::Builder::default())
@@ -237,7 +238,7 @@ pub fn run() {
                 .set(app.app_handle().clone())
                 .expect("failed to set global app handle");
 
-            let _handle = AsyncHandler::block_on(async { prioritize_initialization().await });
+            let _handle = resolve::init_work_dir_and_logger();
 
             logging!(info, Type::Setup, "开始应用初始化...");
             if let Err(e) = app_init::setup_autostart(app) {
@@ -253,7 +254,7 @@ pub fn run() {
             resolve::resolve_setup_handle();
             resolve::resolve_setup_async();
             resolve::resolve_setup_sync();
-            init_signal();
+            resolve::init_signal();
             resolve::resolve_done();
 
             logging!(info, Type::Setup, "初始化已启动");
@@ -337,7 +338,9 @@ pub fn run() {
                             .register_system_hotkey(SystemHotkey::CmdW)
                             .await;
                     }
-                    let _ = hotkey::Hotkey::global().init(true).await;
+                    if !is_enable_global_hotkey {
+                        let _ = hotkey::Hotkey::global().init(false).await;
+                    }
                     return;
                 }
 
