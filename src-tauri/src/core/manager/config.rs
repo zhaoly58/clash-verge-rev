@@ -1,13 +1,12 @@
 use super::CoreManager;
 use crate::{
-    config::{Config, ConfigType},
+    config::{Config, ConfigType, runtime::IRuntime},
     constants::timing,
     core::{handle, validate::CoreConfigValidator},
     utils::{dirs, help},
 };
 use anyhow::{Result, anyhow};
 use clash_verge_logging::{Type, logging};
-use clash_verge_types::runtime::IRuntime;
 use smartstring::alias::String;
 use std::{collections::HashSet, path::PathBuf, time::Instant};
 use tauri_plugin_mihomo::Error as MihomoError;
@@ -90,8 +89,23 @@ impl CoreManager {
                 Ok(())
             }
             Err(err) => {
-                Config::runtime().await.discard();
-                Err(anyhow!("Failed to apply config: {}", err))
+                logging!(
+                    warn,
+                    Type::Core,
+                    "Failed to apply configuration by mihomo api, restart core to apply it, error msg: {err}"
+                );
+                match self.restart_core().await {
+                    Ok(_) => {
+                        Config::runtime().await.apply();
+                        logging!(info, Type::Core, "Configuration applied after restart");
+                        Ok(())
+                    }
+                    Err(err) => {
+                        logging!(error, Type::Core, "Failed to restart core: {}", err);
+                        Config::runtime().await.discard();
+                        Err(anyhow!("Failed to apply config: {}", err))
+                    }
+                }
             }
         }
     }

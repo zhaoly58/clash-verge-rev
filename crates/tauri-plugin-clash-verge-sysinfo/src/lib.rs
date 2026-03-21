@@ -7,6 +7,8 @@ pub mod commands;
 
 #[cfg(windows)]
 use deelevate::{PrivilegeLevel, Token};
+#[cfg(unix)]
+pub use libc;
 use parking_lot::RwLock;
 use sysinfo::{Networks, System};
 use tauri::{
@@ -116,6 +118,12 @@ fn is_binary_admin() -> bool {
         .and_then(|token| token.privilege_level())
         .map(|level| level != PrivilegeLevel::NotPrivileged)
         .unwrap_or(false)
+}
+
+#[inline]
+#[cfg(unix)]
+pub fn current_gid() -> u32 {
+    unsafe { libc::getgid() }
 }
 
 #[inline]
