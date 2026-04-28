@@ -135,14 +135,14 @@ impl Hotkey {
             }
             HotkeyFunction::ToggleSystemProxy => {
                 AsyncHandler::spawn(async move || {
-                    feat::toggle_system_proxy().await;
-                    notify_event(NotificationEvent::SystemProxyToggled).await;
+                    let is_proxy_enabled = feat::toggle_system_proxy().await;
+                    notify_event(NotificationEvent::SystemProxyToggled(is_proxy_enabled)).await;
                 });
             }
             HotkeyFunction::ToggleTunMode => {
                 AsyncHandler::spawn(async move || {
-                    feat::toggle_tun_mode(None).await;
-                    notify_event(NotificationEvent::TunModeToggled).await;
+                    let is_tun_enable = feat::toggle_tun_mode(None).await;
+                    notify_event(NotificationEvent::TunModeToggled(is_tun_enable)).await;
                 });
             }
             HotkeyFunction::EntryLightweightMode => {
@@ -153,16 +153,12 @@ impl Hotkey {
             }
             HotkeyFunction::ReactivateProfiles => {
                 AsyncHandler::spawn(async move || match feat::enhance_profiles().await {
-                    Ok((true, _)) => {
+                    Ok(outcome) if outcome.is_valid() => {
                         handle::Handle::refresh_clash();
                         notify_event(NotificationEvent::ProfilesReactivated).await;
                     }
-                    Ok((false, msg)) => {
-                        let message = if msg.is_empty() {
-                            "Failed to reactivate profiles.".to_string()
-                        } else {
-                            msg.to_string()
-                        };
+                    Ok(outcome) => {
+                        let message = outcome.to_string();
                         logging!(
                             warn,
                             Type::Hotkey,
