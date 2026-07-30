@@ -1,7 +1,7 @@
 //! macOS 托盘速率富文本渲染模块
 //!
 //! 通过 objc2 调用 NSAttributedString 实现托盘速率的富文本显示，
-//! 支持等宽字体、自适应深色/浅色模式配色、两行定宽布局。
+//! 支持等宽字体、跟随菜单栏外观配色、两行定宽布局。
 
 use std::cell::RefCell;
 
@@ -56,8 +56,8 @@ fn build_attributes(button_height: f64) -> Retained<NSDictionary<NSString, AnyOb
     unsafe {
         // 等宽系统字体，确保数字不跳动
         let font = NSFont::monospacedSystemFontOfSize_weight(TRAY_FONT_SIZE, NSFontWeightRegular);
-        // 自适应标签颜色（自动跟随深色/浅色模式）
-        let color = NSColor::labelColor();
+        // 与 NSStatusBarButton 原生标题一致，并按每块屏幕的菜单栏外观动态解析颜色
+        let color = NSColor::controlTextColor();
         // 段落样式：右对齐，保证定宽视觉一致
         let para_style = NSMutableParagraphStyle::new();
         para_style.setAlignment(NSTextAlignment::Right);
@@ -149,21 +149,15 @@ fn apply_status_item_attributed_title(status_item: &NSStatusItem, text: &NSStrin
 /// * `down` - 下行速率（字节/秒）
 pub fn set_speed_attributed_title(status_item: &NSStatusItem, up: u64, down: u64) {
     let speed_text = format_tray_speed(up, down);
-    let changed = LAST_DISPLAY_STR.with(|last| {
-        let mut last_borrow = last.borrow_mut();
-        if *last_borrow == speed_text {
-            false
-        } else {
-            *last_borrow = speed_text.clone();
-            true
+    LAST_DISPLAY_STR.with(|last| {
+        let mut last = last.borrow_mut();
+        if last.as_str() == speed_text {
+            return;
         }
+        *last = speed_text;
+        let ns_string = NSString::from_str(last.as_str());
+        apply_status_item_attributed_title(status_item, &ns_string, true);
     });
-
-    if !changed {
-        return;
-    }
-    let ns_string = NSString::from_str(&speed_text);
-    apply_status_item_attributed_title(status_item, &ns_string, true);
 }
 
 /// 清除 NSStatusItem 按钮上的富文本速率显示
