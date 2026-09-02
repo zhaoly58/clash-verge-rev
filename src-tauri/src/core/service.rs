@@ -1067,7 +1067,7 @@ fn mark_service_unavailable_after_owner_loss<E: RunStateEnv>(store: &RunStateSto
 }
 
 /// How often the owner monitor samples Service status.
-const OWNER_MONITOR_INTERVAL: Duration = Duration::from_secs(2);
+const OWNER_MONITOR_INTERVAL: Duration = Duration::from_secs(5);
 /// Mirrors `OwnerWatch`'s tolerance, for the log line only.
 const SUSTAINED_OWNER_SAMPLES: u8 = 3;
 
@@ -1327,7 +1327,6 @@ impl ServiceManager {
             RUN_STATE.perform(action).await?;
             if !matches!(action, PendingAction::Uninstall) {
                 wait_for_service_ipc().await?;
-                Config::restore_tun_for_session().await;
             }
             Ok(())
         })
