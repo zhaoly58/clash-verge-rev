@@ -500,6 +500,9 @@ export interface TranslationResources {
             updateSuccess: string
           }
         }
+        warnings: {
+          invalidTestUrl: string
+        }
       }
       page: {
         actions: {
@@ -831,6 +834,7 @@ export interface TranslationResources {
           }
           clashService: {
             installSuccess: string
+            sidecarFallback: string
             uninstallSuccess: string
           }
           updater: {
