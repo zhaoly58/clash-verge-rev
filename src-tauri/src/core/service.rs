@@ -9,8 +9,8 @@ use crate::{
         owner_identity::current_owner_credentials,
         proxy_control,
         runstate::{
-            OwnerRecoveryReason, OwnerSample, OwnerStep, OwnerWatch, PendingAction, RUN_STATE, ReadyWaitError,
-            RunState, RunStateEnv, RunStateStore, ServiceHealth,
+            CORE_REJECTED_PREFIX, OwnerRecoveryReason, OwnerSample, OwnerStep, OwnerWatch, PendingAction, RUN_STATE,
+            ReadyWaitError, RunState, RunStateEnv, RunStateStore, ServiceHealth,
         },
         runtime_bundle::{RemoteProviderRef, collect_runtime_bundle, remote_providers_of},
         tray::Tray,
@@ -39,18 +39,42 @@ use std::{
 
 static OWNER_MONITOR_GENERATION: AtomicU64 = AtomicU64::new(0);
 static ACTIVE_SERVICE_SESSION: Lazy<Mutex<Option<ActiveServiceSession>>> = Lazy::new(|| Mutex::new(None));
-static PENDING_SERVICE_FALLBACK_NOTICE: AtomicBool = AtomicBool::new(false);
+static PENDING_SERVICE_FALLBACK_NOTICE: Mutex<Option<String>> = Mutex::new(None);
 static PENDING_SERVICE_REPAIR_NOTICE: AtomicBool = AtomicBool::new(false);
 static PENDING_SERVICE_OWNER_NOTICE: Mutex<Option<String>> = Mutex::new(None);
 
+/// Why the Service was unavailable when the core fell back to Sidecar.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(tag = "kind", content = "reason", rename_all = "camelCase")]
+pub enum ServiceFallbackNotice {
+    Unavailable,
+    CoreRejected(String),
+    NotAutoStarted,
+}
+
+/// The release installer registers AutoStart.
+const SERVICE_NOT_AUTO_STARTED: &str = "the Windows service is stopped and no longer starts with Windows";
+
+pub(crate) fn is_not_auto_started(reason: &str) -> bool {
+    // Detection prefixes its own context to the reason.
+    reason.contains(SERVICE_NOT_AUTO_STARTED)
+}
+
 #[cfg(target_os = "windows")]
-pub(crate) fn notify_service_fallback() {
-    PENDING_SERVICE_FALLBACK_NOTICE.store(true, Ordering::Relaxed);
+pub(crate) fn notify_service_fallback(reason: &str) {
+    *PENDING_SERVICE_FALLBACK_NOTICE.lock() = Some(reason.to_owned());
     Handle::notice_message("service_core::sidecar_fallback", "");
 }
 
-pub(crate) fn take_service_fallback_notice() -> bool {
-    PENDING_SERVICE_FALLBACK_NOTICE.swap(false, Ordering::Relaxed)
+pub(crate) fn take_service_fallback_notice() -> Option<ServiceFallbackNotice> {
+    let reason = PENDING_SERVICE_FALLBACK_NOTICE.lock().take()?;
+    Some(if reason.starts_with(CORE_REJECTED_PREFIX) {
+        ServiceFallbackNotice::CoreRejected(reason)
+    } else if is_not_auto_started(&reason) {
+        ServiceFallbackNotice::NotAutoStarted
+    } else {
+        ServiceFallbackNotice::Unavailable
+    })
 }
 
 pub(crate) fn take_service_repair_notice() -> bool {
@@ -253,7 +277,7 @@ fn open_registered_service() -> Result<Option<windows_service::service::Service>
     let manager = WindowsServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)?;
     match manager.open_service(
         clash_verge_service_ipc::WINDOWS_SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS,
+        ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG,
     ) {
         Ok(service) => Ok(Some(service)),
         Err(WindowsServiceError::Winapi(error)) if error.raw_os_error() == Some(ERROR_SERVICE_DOES_NOT_EXIST) => {
@@ -268,21 +292,34 @@ pub(crate) fn trusted_service_evidence() -> Result<bool> {
     Ok(open_registered_service()?.is_some())
 }
 
-/// Whether IPC cannot succeed until the service is started again. A service that is starting, or
-/// that the SCM has not started yet this boot, is left to the IPC retries, which wait for it.
+/// Why IPC cannot succeed until the service is started again, if it cannot. A starting service,
+/// or an AutoStart one the SCM has yet to start this boot, is left to the IPC retries.
 #[cfg(windows)]
-pub(crate) fn service_stopped() -> Result<bool> {
-    use windows_service::service::{ServiceExitCode, ServiceState};
+pub(crate) fn service_stop_reason() -> Result<Option<&'static str>> {
+    use windows_service::service::{ServiceExitCode, ServiceStartType, ServiceState};
 
     const ERROR_SERVICE_NEVER_STARTED: u32 = 1077;
+    const NOT_RUNNING: &str = "the Windows service is not running";
     let Some(service) = open_registered_service()? else {
-        return Ok(true);
+        return Ok(Some(NOT_RUNNING));
     };
     let status = service
         .query_status()
         .context("failed to query Windows service status")?;
-    Ok(status.current_state == ServiceState::Stopped
-        && status.exit_code != ServiceExitCode::Win32(ERROR_SERVICE_NEVER_STARTED))
+    if status.current_state != ServiceState::Stopped {
+        return Ok(None);
+    }
+    // The development channel registers an on-demand start.
+    if !cfg!(feature = "verge-dev")
+        && service
+            .query_config()
+            .context("failed to query Windows service configuration")?
+            .start_type
+            != ServiceStartType::AutoStart
+    {
+        return Ok(Some(SERVICE_NOT_AUTO_STARTED));
+    }
+    Ok((status.exit_code != ServiceExitCode::Win32(ERROR_SERVICE_NEVER_STARTED)).then_some(NOT_RUNNING))
 }
 
 #[cfg(target_os = "linux")]
@@ -833,7 +870,10 @@ fn record_service_start_refusal<E: RunStateEnv>(
     store: &RunStateStore<E>,
     refusal: ServiceStartRefusal,
 ) -> anyhow::Error {
-    if store.state().mode == crate::core::manager::RunningMode::NotRunning {
+    // A proxy clear failure is about the system network settings; repairing the service cannot fix it.
+    if store.state().mode == crate::core::manager::RunningMode::NotRunning
+        && refusal.code != ServiceErrorCode::ProxyClearFailed as u16
+    {
         store.observe(ServiceHealth::Unavailable(refusal.to_string()));
     }
     refusal.into()
@@ -916,7 +956,7 @@ pub(super) async fn start_with_existing_service(config_file: &Path) -> Result<()
     // PAC follows the Running Mode; the caller opens it via `core_started(Service)`.
     start_owner_monitor();
     tracing::Span::current().record("outcome", "started");
-    PENDING_SERVICE_FALLBACK_NOTICE.store(false, Ordering::Relaxed);
+    PENDING_SERVICE_FALLBACK_NOTICE.lock().take();
     PENDING_SERVICE_REPAIR_NOTICE.store(false, Ordering::Relaxed);
     PENDING_SERVICE_OWNER_NOTICE.lock().take();
     logging!(
@@ -2310,6 +2350,23 @@ mod tests {
             assert!(store.state().tun_should_be_disabled(true));
         }
         Ok(())
+    }
+
+    #[test]
+    fn proxy_clear_refusal_does_not_ask_for_service_repair() {
+        let store = fake_store();
+        store.observe(ServiceHealth::Ready);
+        let _ = super::record_service_start_refusal(
+            &store,
+            super::ServiceStartRefusal {
+                code: clash_verge_service_ipc::ServiceErrorCode::ProxyClearFailed as u16,
+                core_path: "/development/service-core/verge-mihomo".into(),
+                message: "SystemConfiguration operation failed: lock preferences (status 3002)".into(),
+            },
+        );
+
+        assert!(store.state().service_usable());
+        assert!(!store.state().service_needs_attention());
     }
 
     #[test]

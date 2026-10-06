@@ -290,6 +290,9 @@
       },
       "messages": {
         "portInUse": "Port {{port}} is already in use",
+        "runningPort": "Aktuell verwendeter Port: {{port}}",
+        "duplicatePort": "Aktivierte Listener müssen unterschiedliche Ports verwenden",
+        "invalidPort": "Geben Sie einen Port zwischen 1 und 65535 ein",
         "saved": "Port settings saved",
         "saveFailed": "Failed to save port settings",
         "automaticFallback": "Port {{oldPort}} ist belegt, daher läuft diese Sitzung auf {{newPort}}. Die Einstellung bleibt unverändert und {{oldPort}} wird beim nächsten Start erneut versucht.",
@@ -663,7 +666,8 @@
         "uninstallFailed": "Dienst konnte nicht deinstalliert werden",
         "reinstallFailed": "Dienst konnte nicht neu installiert werden",
         "repairFailed": "Dienst konnte nicht repariert werden",
-        "sidecarFailed": "Fortsetzung mit Sidecar fehlgeschlagen"
+        "sidecarFailed": "Fortsetzung mit Sidecar fehlgeschlagen",
+        "coreAlreadyRunning": "Der Sidecar-Modus konnte nicht gestartet werden: Ein anderer Kern läuft noch (PID {{pid}}). Beenden Sie andere Clash-Verge-Instanzen oder die App, die diesen Kern verwendet, und versuchen Sie es erneut."
       },
       "sysproxy": {
         "privilegeRequired": "Systemproxy kann nicht gesetzt werden: macOS hat die Änderung mangels Berechtigung abgelehnt. Installieren Sie den Clash-Verge-Dienst; als Administrator können Sie in den erweiterten Optionen unter Systemeinstellungen → Datenschutz & Sicherheit auch die Passwortpflicht für systemweite Einstellungen deaktivieren.",
