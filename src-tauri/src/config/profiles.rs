@@ -48,8 +48,10 @@ const SELECTED_NODES_SETTLE_INTERVAL: Duration = Duration::from_secs(1);
 const SELECTED_NODES_FIRST_PASS_BUDGET: Duration = Duration::from_secs(3);
 
 /// Define the `profiles.yaml` schema
-#[derive(Default, Debug, Clone, Deserialize, Serialize)]
+#[derive(Default, Debug, Clone, Deserialize, Serialize, specta::Type)]
+#[serde(default)]
 pub struct IProfiles {
+    #[specta(type = Option<std::string::String>)]
     pub current: Option<String>,
 
     pub items: Option<Vec<PrfItem>>,
@@ -292,6 +294,7 @@ impl IProfiles {
                     each.extra = item.extra;
                     each.updated = item.updated;
                     each.home = item.home.to_owned();
+                    each.name = item.name.clone();
                     each.option = PrfOption::merge(each.option.as_ref(), item.option.as_ref());
                     if let Some(file_data) = item.file_data.take() {
                         let file = each.file.take();
